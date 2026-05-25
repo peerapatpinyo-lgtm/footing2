@@ -215,139 +215,91 @@ tab_dash, tab_geo, tab_struct, tab_draw = st.tabs([
 ])
 
 with tab_dash:
-    st.markdown('### 🚀 Executive Performance & Material Dashboard')
+    st.subheader("💡 Foundation Performance & Utilization Dashboard")
     
-    # ==========================================
-    # 1. PLOTLY INTERACTIVE GAUGE CHARTS (KPIs)
-    # ==========================================
-    def create_gauge(val, limit, title, is_fs=False):
-        # ถ้าเป็น Factor of Safety (is_fs=True) ค่ายิ่งมากยิ่งดี (สีเขียวอยู่ขวา)
-        # ถ้าเป็น Stress (is_fs=False) ค่ายิ่งน้อยยิ่งดี (สีเขียวอยู่ซ้าย)
-        
+    # ฟังก์ชันสร้าง Visual Progress Bar (HTML/CSS)
+    def render_utilization_bar(label, demand, capacity, is_fs=False):
+        # ถ้าเป็น Factor of Safety (is_fs=True) ค่า demand ควรมากกว่า capacity
         if is_fs:
-            bar_color = "#10B981" if val >= limit else "#EF4444"
-            steps = [
-                {'range': [0, 1.0], 'color': "#FEE2E2"},
-                {'range': [1.0, limit], 'color': "#FEF3C7"},
-                {'range': [limit, max(val, limit*2)], 'color': "#D1FAE5"}
-            ]
-            max_val = max(val, limit * 2)
+            ratio = capacity / demand if demand > 0 else 1.5  # ยิ่งมากยิ่งดี (ratio ต่ำ)
+            val_str, cap_str = f"{demand:.2f}", f"≥ {capacity:.2f}"
         else:
-            bar_color = "#10B981" if val <= limit else "#EF4444"
-            steps = [
-                {'range': [0, limit*0.8], 'color': "#D1FAE5"},
-                {'range': [limit*0.8, limit], 'color': "#FEF3C7"},
-                {'range': [limit, max(val, limit*1.5)], 'color': "#FEE2E2"}
-            ]
-            max_val = max(val, limit * 1.5)
-
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
-            value = val,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': title, 'font': {'size': 14, 'color': '#1E293B'}},
-            delta = {'reference': limit, 'increasing': {'color': "#EF4444" if not is_fs else "#10B981"}, 'decreasing': {'color': "#10B981" if not is_fs else "#EF4444"}},
-            gauge = {
-                'axis': {'range': [0, max_val], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                'bar': {'color': bar_color},
-                'bgcolor': "white",
-                'borderwidth': 2,
-                'bordercolor': "gray",
-                'steps': steps,
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': limit
-                }
-            }
-        ))
-        fig.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", font={'color': "#0F172A"})
-        return fig
-
-    # จัดเรียง 4 เกจวัดหลัก
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1: st.plotly_chart(create_gauge(sls['q_max'], qa_allow, "Soil Pressure<br>(t/m²)"), use_container_width=True)
-    with kpi2: st.plotly_chart(create_gauge(sls['FS_ovr_x'], 1.5, "Overturning FS<br>(X-Axis)", is_fs=True), use_container_width=True)
-    with kpi3: st.plotly_chart(create_gauge(sls['FS_slide'], 1.5, "Sliding FS<br>(Global)", is_fs=True), use_container_width=True)
-    with kpi4: st.plotly_chart(create_gauge(uls['v_u_punch'], uls['phi_v_c_punch'], "Punching Shear<br>(ksc)"), use_container_width=True)
-
-    st.markdown("---")
-    
-    # ==========================================
-    # 2. 3D BIAXIAL PRESSURE MAPPING & MTO
-    # ==========================================
-    col_3d, col_mto = st.columns([1.5, 1])
-    
-    with col_3d:
-        st.markdown('<div class="section-title">🌐 3D Biaxial Soil Stress Distribution</div>', unsafe_allow_html=True)
-        # สร้าง 3D Surface Plot แสดงการกระจายตัวของแรงดันดิน
-        x_vals = np.linspace(-B_m/2, B_m/2, 20)
-        y_vals = np.linspace(-L_m/2, L_m/2, 20)
-        X, Y = np.meshgrid(x_vals, y_vals)
-        
-        # คำนวณ Pressure (Simplified linear distribution for visualization)
-        P_A = sls['P_total'] / (B_m * L_m)
-        Mx_Iy = (loads.M_DL_x + loads.M_LL_x) / ((B_m * L_m**3)/12)
-        My_Ix = (loads.M_DL_y + loads.M_LL_y) / ((L_m * B_m**3)/12)
-        
-        Z = P_A + (Mx_Iy * Y) + (My_Ix * X)
-        Z = np.maximum(Z, 0) # ดินรับแรงดึงไม่ได้ (Tension liftoff)
-
-        fig_3d = go.Figure(data=[go.Surface(z=Z, x=X, y=Y, colorscale='Viridis')])
-        fig_3d.update_layout(
-            scene=dict(
-                xaxis_title='Width (X)',
-                yaxis_title='Length (Y)',
-                zaxis_title='Pressure (t/m²)',
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
-            ),
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=350
-        )
-        st.plotly_chart(fig_3d, use_container_width=True)
-
-    with col_mto:
-        st.markdown('<div class="section-title">💰 Material Take-Off (MTO)</div>', unsafe_allow_html=True)
-        
-        # คำนวณปริมาณวัสดุ
-        vol_concrete = B_m * L_m * (H_cm/100)
-        vol_lean = (B_m + 0.1) * (L_m + 0.1) * 0.05
-        
-        # DB16 weight = 1.58 kg/m
-        len_x_bar = (B_m - 0.15) + 0.3 # รวมระยะงอขอ
-        len_y_bar = (L_m - 0.15) + 0.3
-        weight_steel_x = bars_count_x * len_x_bar * 1.58
-        weight_steel_y = bars_count_y * len_y_bar * 1.58
-        total_steel = weight_steel_x + weight_steel_y
-        
-        ratio_steel_conc = total_steel / vol_concrete if vol_concrete > 0 else 0
-
-        # แสดงผลแบบกล่องการเงิน
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%); padding: 20px; border-radius: 12px; color: white;">
-            <h4 style="margin-top: 0; color: #94A3B8; font-size: 14px;">ESTIMATED QUANTITIES</h4>
+            ratio = demand / capacity if capacity > 0 else 1.5 # ยิ่งน้อยยิ่งดี
+            val_str, cap_str = f"{demand:.2f}", f"≤ {capacity:.2f}"
             
-            <div style="margin-bottom: 15px;">
-                <span style="font-size: 13px; color: #CBD5E1;">Structural Concrete (fc' {fc_prime})</span><br>
-                <span style="font-size: 24px; font-weight: 700; color: #38BDF8;">{vol_concrete:.2f} m³</span>
+        ratio_pct = min(ratio * 100, 100)
+        
+        # Color Coding: < 80% เขียว, 80-100% เหลือง, > 100% แดง
+        if ratio <= 0.8:
+            color = "#10B981" # Green
+        elif ratio <= 1.0:
+            color = "#F59E0B" # Yellow (Warning)
+        else:
+            color = "#EF4444" # Red (Fail)
+            
+        status = "PASS" if ratio <= 1.0 else "FAIL"
+        
+        return f"""
+        <div style="background-color: #F8FAFC; padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-weight: 600; color: #1E293B;">
+                <span style="font-size: 15px;">{label}</span>
+                <span style="color: {color}; font-size: 15px;">Demand: {val_str} | Limit: {cap_str} 
+                <span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 4px; margin-left: 10px; font-size: 12px;">{status}</span>
+                </span>
             </div>
-            
-            <div style="margin-bottom: 15px;">
-                <span style="font-size: 13px; color: #CBD5E1;">Lean Concrete (5cm)</span><br>
-                <span style="font-size: 20px; font-weight: 700; color: #94A3B8;">{vol_lean:.2f} m³</span>
+            <div style="width: 100%; background-color: #CBD5E1; border-radius: 5px; height: 12px; overflow: hidden;">
+                <div style="width: {ratio_pct}%; background-color: {color}; height: 100%; transition: width 0.5s ease-in-out;"></div>
             </div>
-            
-            <div style="margin-bottom: 15px;">
-                <span style="font-size: 13px; color: #CBD5E1;">Reinforcement Steel (DB16)</span><br>
-                <span style="font-size: 24px; font-weight: 700; color: #F87171;">{total_steel:.1f} kg</span>
-            </div>
-            
-            <div style="border-top: 1px solid #334155; padding-top: 10px; margin-top: 10px;">
-                <span style="font-size: 13px; color: #94A3B8;">Steel Ratio: </span>
-                <span style="font-size: 14px; font-weight: 600; color: #10B981;">{ratio_steel_conc:.1f} kg/m³</span>
+            <div style="text-align: right; margin-top: 5px; font-size: 12px; color: #64748B;">
+                Utilization: {ratio*100:.1f}%
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
+
+    # แบ่งครึ่งหน้าจอ ซ้าย: Geotechnical, ขวา: Structural
+    col_geo, col_str = st.columns(2)
+    
+    with col_geo:
+        st.markdown('<div class="section-title">🪨 Geotechnical Safety</div>', unsafe_allow_html=True)
+        # 1. Soil Bearing Capacity
+        st.markdown(render_utilization_bar(
+            "Max Soil Bearing Pressure (t/m²)", 
+            sls['q_max'], qa_allow
+        ), unsafe_allow_html=True)
+        
+        # 2. Overturning FS (X-Axis)
+        st.markdown(render_utilization_bar(
+            "Factor of Safety: Overturning (X)", 
+            sls['FS_ovr_x'], 1.50, is_fs=True
+        ), unsafe_allow_html=True)
+        
+        # 3. Sliding FS
+        st.markdown(render_utilization_bar(
+            "Factor of Safety: Sliding", 
+            sls['FS_slide'], 1.50, is_fs=True
+        ), unsafe_allow_html=True)
+
+    with col_str:
+        st.markdown('<div class="section-title">🧱 Structural Concrete Safety</div>', unsafe_allow_html=True)
+        # 4. Wide-beam Shear
+        st.markdown(render_utilization_bar(
+            "One-Way Shear Stress (ksc)", 
+            uls['v_u_wide_max'], uls['phi_v_c_wide']
+        ), unsafe_allow_html=True)
+        
+        # 5. Punching Shear
+        st.markdown(render_utilization_bar(
+            "Two-Way Punching Shear (ksc)", 
+            uls['v_u_punch'], uls['phi_v_c_punch']
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📋 Executive Construction Procurement Specification")
+    st.info(f"📐 **Footing Dimensions:** Width B = **{B_m:.2f}** m | Length L = **{L_m:.2f}** m | Thickness H = **{H_cm:.0f}** cm (Effective Depth d = **{designer.d_cm:.1f}** cm)")
+    
+    sc1, sc2 = st.columns(2)
+    sc1.success(f"🧲 **X-Axis Bottom Mesh:** Provide **{bars_count_x}x DB16** Bars spaced at **@{space_x:.1f} cm** c/c")
+    sc2.success(f"🧲 **Y-Axis Bottom Mesh:** Provide **{bars_count_y}x DB16** Bars spaced at **@{space_y:.1f} cm** c/c")
 
 with tab_geo:
     st.markdown("### 🪨 Advanced Soil Geotechnical Analytics")
