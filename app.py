@@ -322,9 +322,13 @@ with tab_dash:
         st.markdown("#### 2. การตรวจสอบแรงเฉือนทะลุความหนา (Two-Way Punching Shear)")
         st.markdown("วิเคราะห์ที่ผิววิกฤตโดยรอบห่างจากขอบเสาเป็นระยะ $d/2$ ทุกทิศทาง:")
         st.latex(r"b_0 = 2 \cdot [(c_x + d) + (c_y + d)]")
+        
+        # FIX: คำนวณ b0_local สดๆ ตรงนี้เพื่อแก้ปัญหา KeyError จาก Backend
+        b0_local = 2 * ((col_bx + designer.d_cm) + (col_by + designer.d_cm))
+        
         st.latex(r"v_u = \frac{V_{u,punch}}{b_0 \cdot d} \le \phi v_c = \phi \cdot 1.06\sqrt{f'_c}")
         st.markdown(f"""
-        * เส้นรอบรูปวิกฤต ($b_0$) = **{uls['b0_cm']:.1f}** cm
+        * เส้นรอบรูปวิกฤต ($b_0$) = **{b0_local:.1f}** cm
         * หน่วยแรงเฉือนทะลุที่เกิดขึ้น ($v_u$) = **{uls['v_u_punch']:.2f}** ksc
         * ขีดความสามารถรับแรงเฉือนทะลุสูงสุด ($\phi v_c$) = **{uls['phi_v_c_punch']:.2f}** ksc
         """)
