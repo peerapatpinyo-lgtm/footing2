@@ -217,24 +217,24 @@ tab_dash, tab_geo, tab_struct, tab_draw = st.tabs([
 with tab_dash:
     st.subheader("💡 Foundation Performance & Utilization Dashboard")
     
-    # ฟังก์ชันสร้าง Visual Progress Bar (HTML/CSS)
+    # Visual Progress Bar Component (HTML/CSS)
     def render_utilization_bar(label, demand, capacity, is_fs=False):
         if is_fs:
-            ratio = capacity / demand if demand > 0 else 1.5  # ยิ่งมากยิ่งดี (FS สูง = ratio ต่ำ)
+            ratio = capacity / demand if demand > 0 else 1.5  # Higher FS is better (Lower ratio)
             val_str, cap_str = f"{demand:.2f}", f"≥ {capacity:.2f}"
         else:
-            ratio = demand / capacity if capacity > 0 else 1.5 # ยิ่งน้อยยิ่งดี (Stress ต่ำ = ratio ต่ำ)
+            ratio = demand / capacity if capacity > 0 else 1.5 # Lower Stress is better (Lower ratio)
             val_str, cap_str = f"{demand:.2f}", f"≤ {capacity:.2f}"
             
         ratio_pct = min(ratio * 100, 100)
         
-        # Color Coding
+        # Color Coding Rules
         if ratio <= 0.8:
-            color = "#10B981" # เขียว (Safe)
+            color = "#10B981" # Green (Safe / Optimized)
         elif ratio <= 1.0:
-            color = "#F59E0B" # เหลือง (Warning)
+            color = "#F59E0B" # Yellow (Warning / Close to Limit)
         else:
-            color = "#EF4444" # แดง (Fail)
+            color = "#EF4444" # Red (Fail / Structural Hazard)
             
         status = "PASS" if ratio <= 1.0 else "FAIL"
         
@@ -255,7 +255,7 @@ with tab_dash:
         </div>
         """
 
-    # Layout แบ่งครึ่งหน้าจอ ซ้าย: ดิน, ขวา: คอนกรีต
+    # Layout Split: Left for Geotechnical, Right for Structural
     col_geo, col_str = st.columns(2)
     
     with col_geo:
@@ -280,66 +280,114 @@ with tab_dash:
     st.markdown("---")
     
     # ==============================================================
-    # NEW SECTION: DETAILED METHOD & ENGINEERING NOTES
+    # DETAILED CALCULATION SHEET WITH FORMULAS, SUBSTITUTION & REFS
     # ==============================================================
-    st.markdown("### 📚 รายการคำนวณและบันทึกทางวิศวกรรมแบบละเอียด (Detailed Calculations & Notes)")
+    st.markdown("### 📚 Detailed Engineering Calculation Sheets & Verifications")
     
-    with st.expander("🔍 ดูวิธีทำอย่างละเอียดสำหรับงานปฐพีกลศาสตร์ (Geotechnical Calculations)"):
-        st.markdown("#### 1. การตรวจสอบหน่วยแรงดันดินลึกสุด (Soil Bearing Pressure)")
-        st.markdown("คำนวณโดยใช้สมการรวมหน่วยแรงดัดแบบสองแกน (Biaxial Bending) ภายใต้สภาวะใช้งาน (Service Load Combination):")
-        st.latex(r"q_{max} = \frac{P_{total}}{A} \pm \frac{M_{x,total}}{W_x} \pm \frac{M_{y,total}}{W_y}")
+    with st.expander("🔍 View Detailed Geotechnical Engineering Calculations"):
+        
+        # 1. Soil Bearing Capacity
+        st.markdown("### 1. Maximum Soil Bearing Pressure Verification")
+        st.markdown("**Governing Formula (Biaxial Combined Stress):**")
+        st.latex(r"q_{max} = \frac{P_{total}}{A} + \frac{M_{x,total}}{W_x} + \frac{M_{y,total}}{W_y}")
+        st.markdown("**Standard Reference:**")
+        st.caption("Meyerhof's & Bowles' Foundation Analysis and Design Method for Shallow Foundations under Eccentric/Biaxial Loads.")
+        st.markdown("**Value Substitution:**")
+        st.latex(rf"q_{{max}} = \frac{{{sls['P_total']:.2f}\text{{ tons}}}}{{{B_m * L_m:.2f}\text{{ m}}^2}} + \text{{Eccentricity Terms}} = {sls['q_max']:.2f}\text{{ t/m}}^2")
+        st.markdown("**Design Comparison & Verification:**")
+        geo1_status = "✅ PASS" if sls['q_max'] <= qa_allow else "❌ FAIL"
         st.markdown(f"""
-        * $P_{{total}}$ (น้ำหนักรวมฐานรากและดินเดิมเหนือบดทับ) = **{sls['P_total']:.2f}** tons
-        * $A$ (พื้นที่หน้าตัดฐานราก $B \times L$) = **{B_m * L_m:.2f}** m²
-        * **ผลลัพธ์:** $q_{{max}}$ คำนวณได้ **{sls['q_max']:.2f}** t/m² ซึ่งค่านี้ต้องไม่เกิน $q_{{a,allow}}$ (**{qa_allow:.2f}** t/m²)
+        * **Actual Soil Pressure (Demand):** $q_{{max}} = {sls['q_max']:.2f}$ t/m²
+        * **Allowable Soil Capacity (Limit):** $q_{{a,allow}} = {qa_allow:.2f}$ t/m²
+        * **Comparison Statement:** $q_{{max}} ({sls['q_max']:.2f}\text{{ t/m}}^2) \le q_{{a,allow}} ({qa_allow:.2f}\text{{ t/m}}^2) \rightarrow$ **{geo1_status}**
         """)
         
-        st.markdown("#### 2. อัตราส่วนความปลอดภัยต่อการพลิกคว่ำ (Overturning Factor of Safety)")
-        st.latex(r"FS_{overturning} = \frac{\sum M_{resisting}}{\sum M_{overturning}} \ge 1.50")
+        st.markdown("---")
+
+        # 2. Overturning
+        st.markdown("### 2. Factor of Safety Against Overturning (X-Axis)")
+        st.markdown("**Governing Formula:**")
+        st.latex(r"FS_{overturning} = \frac{\sum M_{resisting}}{\sum M_{overturning}} = \frac{P_{total} \cdot (B / 2)}{M_x + (V_x \cdot D_f)}")
+        st.markdown("**Standard Reference:**")
+        st.caption("International Building Code (IBC) Section 1807.2.3 & ACI 318 Structural Stability Criteria.")
+        st.markdown("**Value Substitution:**")
+        st.latex(rf"FS_{{overturning,x}} = \frac{{{sls['P_total']:.2f}\text{{ tons}} \times ({B_m:.2f}\text{{ m}} / 2)}}{{\text{{Overturning Moments}}}} = {sls['FS_ovr_x']:.2f}")
+        st.markdown("**Design Comparison & Verification:**")
+        geo2_status = "✅ PASS" if sls['FS_ovr_x'] >= 1.50 else "❌ FAIL"
         st.markdown(f"""
-        * โมเมนต์ต้านทาน ($M_{{resisting}}$) เกิดจากน้ำหนักดิ่งกดลงจุดศูนย์กลาง: $M_R = P_{{total}} \times \frac{{B}}{2}$
-        * โมเมนต์พลิกคว่ำ ($M_{{overturning}}$) เกิดจากโมเมนต์ภายนอกและแรงเฉือนที่โคนเสา: $M_O = M_x + (V_x \times D_f)$
-        * **ผลลัพธ์:** $FS$ ด้านพลิกคว่ำรอบแกน X = **{sls['FS_ovr_x']:.2f}**
+        * **Calculated Safety Factor (Actual):** $FS_{{ovr,x}} = {sls['FS_ovr_x']:.2f}$
+        * **Minimum Required Factor (Limit):** $FS_{{limit}} = 1.50$
+        * **Comparison Statement:** $FS_{{ovr,x}} ({sls['FS_ovr_x']:.2f}) \ge 1.50 \rightarrow$ **{geo2_status}**
         """)
 
-        st.markdown("#### 3. อัตราส่วนความปลอดภัยต่อการลื่นไถล (Sliding Factor of Safety)")
-        st.latex(r"FS_{sliding} = \frac{P_{total} \times \tan(\delta)}{V_{horizontal}} \ge 1.50")
+        st.markdown("---")
+
+        # 3. Sliding
+        st.markdown("### 3. Factor of Safety Against Lateral Sliding")
+        st.markdown("**Governing Formula:**")
+        st.latex(r"FS_{sliding} = \frac{F_{resisting}}{F_{sliding}} = \frac{P_{total} \cdot \tan(\delta)}{V_{horizontal}}")
+        st.markdown("**Standard Reference:**")
+        st.caption("International Building Code (IBC) Section 1807.2.1 & NAVFAC DM-7 Foundation Principles.")
+        st.markdown("**Value Substitution:**")
+        st.latex(rf"FS_{{sliding}} = \frac{{{sls['P_total']:.2f}\text{{ tons}} \times {base_friction}}}{{\text{{Total Horizontal Shear}}}} = {sls['FS_slide']:.2f}")
+        st.markdown("**Design Comparison & Verification:**")
+        geo3_status = "✅ PASS" if sls['FS_slide'] >= 1.50 else "❌ FAIL"
         st.markdown(f"""
-        * แรงต้านทานการสไลด์เกิดจากแรงเสียดทานใต้ท้องฐานราก โดยที่ค่าสัมประสิทธิ์แรงเสียดทาน ($\tan\delta$) กำหนดไว้ที่ **{base_friction}**
-        * **ผลลัพธ์:** $FS$ การลื่นไถลรวม = **{sls['FS_slide']:.2f}**
+        * **Calculated Safety Factor (Actual):** $FS_{{sliding}} = {sls['FS_slide']:.2f}$
+        * **Minimum Required Factor (Limit):** $FS_{{limit}} = 1.50$
+        * **Comparison Statement:** $FS_{{sliding}} ({sls['FS_slide']:.2f}) \ge 1.50 \rightarrow$ **{geo3_status}**
         """)
 
-    with st.expander("🔍 ดูวิธีทำอย่างละเอียดสำหรับงานวิศวกรรมโครงสร้าง (Structural Calculations)"):
-        st.markdown("#### 1. การตรวจสอบแรงเฉือนแบบคานกว้าง (One-Way Shear / Wide-Beam Shear)")
-        st.markdown("วิเคราะห์ที่ระยะ $d$ (Effective depth) ห่างจากขอบเสาตอม่อตามมาตรฐาน ACI 318:")
-        st.latex(r"v_u = \frac{V_u}{B \cdot d} \le \phi v_c = \phi \cdot 0.53\sqrt{f'_c}")
+    with st.expander("🔍 View Detailed Structural Concrete Calculations"):
+        
+        # 1. One-Way Shear
+        st.markdown("### 1. One-Way Shear / Wide-Beam Shear Verification")
+        st.markdown("**Governing Formula:**")
+        st.latex(r"v_u = \frac{V_u}{B \cdot d} \quad \text{vs.} \quad \phi v_c = \phi \cdot 0.53\sqrt{f'_c}")
+        st.markdown("**Standard Reference:**")
+        st.caption("ACI 318-19 Building Code Requirements for Structural Concrete - Section 22.5 (One-Way Shear Strength).")
+        st.markdown("**Value Substitution:**")
+        st.latex(rf"v_u = \frac{{\text{{Ultimate Shear Force at distance }} d}}{{{B_m*100:.1f}\text{{ cm}} \times {designer.d_cm:.1f}\text{{ cm}}}} = {uls['v_u_wide_max']:.2f}\text{{ ksc}}")
+        st.latex(rf"\phi v_c = 0.75 \times 0.53 \times \sqrt{{{fc_prime}}} = {uls['phi_v_c_wide']:.2f}\text{{ ksc}}")
+        st.markdown("**Design Comparison & Verification:**")
+        str1_status = "✅ PASS" if uls['v_u_wide_max'] <= uls['phi_v_c_wide'] else "❌ FAIL"
         st.markdown(f"""
-        * ระยะลึกประสิทธิผล ($d$) = **{designer.d_cm:.1f}** cm
-        * หน่วยแรงเฉือนอิมแพคที่เกิดขึ้นจริง ($v_u$) = **{uls['v_u_wide_max']:.2f}** ksc
-        * ขีดความสามารถรับแรงเฉือนของคอนกรีต ($\phi v_c$) = **{uls['phi_v_c_wide']:.2f}** ksc
+        * **Ultimate Shear Stress (Demand):** $v_u = {uls['v_u_wide_max']:.2f}$ ksc
+        * **Concrete Shear Capacity (Limit):** $\phi v_c = {uls['phi_v_c_wide']:.2f}$ ksc
+        * **Comparison Statement:** $v_u ({uls['v_u_wide_max']:.2f}\text{{ ksc}}) \le \phi v_c ({uls['phi_v_c_wide']:.2f}\text{{ ksc}}) \rightarrow$ **{str1_status}**
         """)
         
-        st.markdown("#### 2. การตรวจสอบแรงเฉือนทะลุความหนา (Two-Way Punching Shear)")
-        st.markdown("วิเคราะห์ที่ผิววิกฤตโดยรอบห่างจากขอบเสาเป็นระยะ $d/2$ ทุกทิศทาง:")
-        st.latex(r"b_0 = 2 \cdot [(c_x + d) + (c_y + d)]")
+        st.markdown("---")
+
+        # 2. Punching Shear
+        st.markdown("### 2. Two-Way Shear / Punching Shear Verification")
+        st.markdown("**Governing Formula:**")
+        st.latex(r"b_0 = 2 \cdot [(c_x + d) + (c_y + d)] \quad \rightarrow \quad v_u = \frac{V_{u,punch}}{b_0 \cdot d} \quad \text{vs.} \quad \phi v_c = \phi \cdot 1.06\sqrt{f'_c}")
+        st.markdown("**Standard Reference:**")
+        st.caption("ACI 318-19 Building Code Requirements for Structural Concrete - Section 22.6 (Two-Way Punching Shear Strength).")
+        st.markdown("**Value Substitution:**")
         
-        # FIX: คำนวณ b0_local สดๆ ตรงนี้เพื่อแก้ปัญหา KeyError จาก Backend
+        # Calculate critical perimeter locally to avoid backend KeyError exceptions
         b0_local = 2 * ((col_bx + designer.d_cm) + (col_by + designer.d_cm))
         
-        st.latex(r"v_u = \frac{V_{u,punch}}{b_0 \cdot d} \le \phi v_c = \phi \cdot 1.06\sqrt{f'_c}")
+        st.latex(r"b_0 = 2 \cdot [(" + f"{col_bx:.1f}" + r" + " + f"{designer.d_cm:.1f}" + r") + (" + f"{col_by:.1f}" + r" + " + f"{designer.d_cm:.1f}" + r")] = " + f"{b0_local:.1f}" + r"\text{ cm}")
+        st.latex(rf"v_u = \frac{{\text{{Ultimate Punching Load}}}}{{{b0_local:.1f}\text{{ cm}} \times {designer.d_cm:.1f}\text{{ cm}}}} = {uls['v_u_punch']:.2f}\text{{ ksc}}")
+        st.latex(rf"\phi v_c = 0.75 \times 1.06 \times \sqrt{{{fc_prime}}} = {uls['phi_v_c_punch']:.2f}\text{{ ksc}}")
+        st.markdown("**Design Comparison & Verification:**")
+        str2_status = "✅ PASS" if uls['v_u_punch'] <= uls['phi_v_c_punch'] else "❌ FAIL"
         st.markdown(f"""
-        * เส้นรอบรูปวิกฤต ($b_0$) = **{b0_local:.1f}** cm
-        * หน่วยแรงเฉือนทะลุที่เกิดขึ้น ($v_u$) = **{uls['v_u_punch']:.2f}** ksc
-        * ขีดความสามารถรับแรงเฉือนทะลุสูงสุด ($\phi v_c$) = **{uls['phi_v_c_punch']:.2f}** ksc
+        * **Punching Shear Stress (Demand):** $v_u = {uls['v_u_punch']:.2f}$ ksc
+        * **Punching Shear Capacity (Limit):** $\phi v_c = {uls['phi_v_c_punch']:.2f}$ ksc
+        * **Comparison Statement:** $v_u ({uls['v_u_punch']:.2f}\text{{ ksc}}) \le \phi v_c ({uls['phi_v_c_punch']:.2f}\text{{ ksc}}) \rightarrow$ **{str2_status}**
         """)
 
-    with st.expander("📌 Engineering Technical Notes (บันทึกข้อกำหนดและมาตรฐานควบคุม)"):
+    with st.expander("📌 Engineering Technical Notes & Design Standards"):
         st.markdown(f"""
-        * **Design Code:** อ้างอิงเกณฑ์การคำนวณตามมาตรฐาน **ACI 318-19** (Ultimate Strength Design - USD)
-        * **Load Combinations:** * สภาวะกำลัง (Strength State): $U = 1.4DL + 1.7LL$ หรือ $U = 0.75(1.4DL + 1.7LL \pm 1.7W)$
-            * สภาวะการใช้งาน (Service State): $S = DL + LL$
-        * **Concrete Covering:** สำหรับฐานรากที่หล่อและสัมผัสกับดินโดยตรง ค่าระยะหุ้มเหล็กเสริมเคลียร์ริ่ง (Concrete Covering) ต้องไม่น้อยกว่า **7.5 cm** ตลอดเวลาเพื่อป้องกันการกัดกร่อนจากความชื้นในดิน
-        * **Minimum Thickness:** ตามข้อกำหนดมาตรฐาน ความหนาฐานรากเหนือบดทับ ($H$) ต้องมีค่าไม่น้อยกว่า **30 cm** สำหรับการวางบนดินบดอัดแน่น เพื่อการกระจายแรงที่สมบูรณ์
+        * **Design Framework:** Structural calculations adhere completely to **ACI 318-19 (Ultimate Strength Design Method)** rules.
+        * **Load Combinations:** * **Ultimate Strength State (Factored):** $U = 1.4DL + 1.7LL$ or Wind-governed multi-combinations.
+            * **Serviceability State (Unfactored):** $S = DL + LL$ for settlement and subgrade calculations.
+        * **Concrete Clear Covering:** Minimum clear concrete cover is strictly defined as **7.5 cm** for elements cast directly against earth to avoid structural rebar deterioration from chemical/moisture intrusion.
+        * **Minimum Geometrical Boundaries:** Foundation gross slab thickness ($H$) must be $\ge$ **30 cm** to guarantee proper continuous stress line distributions.
         """)
 
 with tab_geo:
