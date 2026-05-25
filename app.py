@@ -300,57 +300,133 @@ with tab_struct:
         st.warning(f"⚠️ WARNING: Insufficient anchorage length. Standard 90-degree hooks required at rebar terminations.")
 
 with tab_draw:
-    st.markdown("### 🎨 2D AutoCAD-Style Engineering Blueprints")
+    st.markdown("### 🎨 2D Professional Engineering Blueprints")
+    st.markdown("แบบขยายรายละเอียดฐานรากและเหล็กเสริม (สำหรับนำไปเขียนแบบก่อสร้าง)")
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7), gridspec_kw={'width_ratios': [1, 1.2]})
+    fig.patch.set_facecolor('#FFFFFF')
     
-    # DRAWING 1: PLAN VIEW
-    ax1.add_patch(plt.Rectangle((0, 0), B_m, L_m, color='#F8FAFC', ec='#1E3A8A', lw=2.5, label='Footing Boundary'))
-    cx = (B_m - (col_bx/100)) / 2
-    cy = (L_m - (col_by/100)) / 2
-    ax1.add_patch(plt.Rectangle((cx, cy), col_bx/100, col_by/100, color='#FEE2E2', ec='#DC2626', lw=2, label='Column Core'))
+    # ==============================================================
+    # DRAWING 1: PLAN VIEW (แบบแปลน)
+    # ==============================================================
+    # 1.1 Footing Boundary
+    ax1.add_patch(plt.Rectangle((0, 0), B_m, L_m, facecolor='#F8FAFC', edgecolor='#0F172A', lw=2))
     
+    # 1.2 Centerlines
+    cx_pos, cy_pos = B_m / 2, L_m / 2
+    ax1.plot([-0.2, B_m + 0.2], [cy_pos, cy_pos], color='#94A3B8', lw=1, linestyle='dashdot')
+    ax1.plot([cx_pos, cx_pos], [-0.2, L_m + 0.2], color='#94A3B8', lw=1, linestyle='dashdot')
+    
+    # 1.3 Column Core
+    col_x, col_y = (B_m - (col_bx/100)) / 2, (L_m - (col_by/100)) / 2
+    ax1.add_patch(plt.Rectangle((col_x, col_y), col_bx/100, col_by/100, facecolor='#FEE2E2', hatch='//', edgecolor='#DC2626', lw=1.5, label='Column Core'))
+    
+    # 1.4 Punching Shear Perimeter (d/2)
     p_off = (designer.d_cm / 100) / 2
-    ax1.add_patch(plt.Rectangle((cx - p_off, cy - p_off), (col_bx/100) + 2*p_off, (col_by/100) + 2*p_off, fill=False, ec='#D97706', lw=1.5, ls='--', label='Punching Surface (d/2)'))
+    ax1.add_patch(plt.Rectangle((col_x - p_off, col_y - p_off), (col_bx/100) + 2*p_off, (col_by/100) + 2*p_off, 
+                                fill=False, edgecolor='#D97706', lw=1.5, linestyle='--', label='Punching Perimeter (d/2)'))
     
-    # Bottom reinforcement mesh matrix lines
-    for i in range(min(bars_count_x, 12)):
-        pos = 0.075 + i * ((L_m - 0.15) / (min(bars_count_x, 12) - 1))
-        ax1.plot([0.075, B_m - 0.075], [pos, pos], color='#3B82F6', lw=1.2, alpha=0.8)
-    for i in range(min(bars_count_y, 12)):
-        pos = 0.075 + i * ((B_m - 0.15) / (min(bars_count_y, 12) - 1))
-        ax1.plot([pos, pos], [0.075, L_m - 0.075], color='#1D4ED8', lw=1.2, alpha=0.8)
+    # 1.5 Rebar Mesh (Showing only a few representative bars for clarity)
+    cover = 0.075
+    ax1.plot([cover, B_m - cover], [cover, cover], color='#2563EB', lw=2, label='Bottom Mesh X-Y')
+    ax1.plot([cover, cover], [cover, L_m - cover], color='#2563EB', lw=2)
+    for i in range(1, 4): # Show sample spacing
+        ax1.plot([cover, B_m - cover], [cover + i*(L_m - 2*cover)/15, cover + i*(L_m - 2*cover)/15], color='#3B82F6', lw=1, alpha=0.6)
+        ax1.plot([cover + i*(B_m - 2*cover)/15, cover + i*(B_m - 2*cover)/15], [cover, L_m - cover], color='#3B82F6', lw=1, alpha=0.6)
 
-    ax1.set_xlim(-0.3, B_m + 0.3)
-    ax1.set_ylim(-0.3, L_m + 0.3)
+    # 1.6 Dimension Lines (CAD Style)
+    def draw_dim(ax, x1, y1, x2, y2, text, offset_x=0, offset_y=0):
+        ax.plot([x1, x2], [y1, y2], color='#475569', lw=1)
+        ax.plot([x1, x1], [y1-0.05, y1+0.05], color='#475569', lw=1.5) # Tick
+        ax.plot([x2, x2], [y2-0.05, y2+0.05], color='#475569', lw=1.5) # Tick
+        ax.text((x1+x2)/2 + offset_x, (y1+y2)/2 + offset_y, text, ha='center', va='center', color='#0F172A', fontsize=9, backgroundcolor='white')
+
+    draw_dim(ax1, 0, L_m + 0.15, B_m, L_m + 0.15, f"B = {B_m:.2f} m", offset_y=0.05) # Width
+    
+    ax1.plot([-0.15, -0.15], [0, L_m], color='#475569', lw=1)
+    ax1.plot([-0.2, -0.1], [0, 0], color='#475569', lw=1.5)
+    ax1.plot([-0.2, -0.1], [L_m, L_m], color='#475569', lw=1.5)
+    ax1.text(-0.25, L_m/2, f"L = {L_m:.2f} m", ha='center', va='center', color='#0F172A', fontsize=9, rotation=90)
+
+    ax1.set_xlim(-0.4, B_m + 0.3)
+    ax1.set_ylim(-0.4, L_m + 0.4)
     ax1.set_aspect('equal')
-    ax1.set_title("REINFORCEMENT DETAILED MESH (PLAN VIEW)", fontsize=11, fontweight='bold', color='#1E3A8A')
+    ax1.set_title("PLAN VIEW", fontsize=12, fontweight='bold', color='#1E3A8A', pad=15)
     ax1.axis('off')
-    ax1.text(B_m/2, L_m + 0.05, f"L = {L_m:.2f} m", ha='center', va='bottom', weight='bold')
-    ax1.text(B_m + 0.05, L_m/2, f"B = {B_m:.2f} m", ha='left', va='center', weight='bold', rotation=-90)
-    ax1.legend(loc='lower left', fontsize=8)
+    ax1.legend(loc='lower center', bbox_to_anchor=(0.5, -0.1), ncol=3, fontsize=8, frameon=False)
 
-    # DRAWING 2: CROSS SECTION VIEW
-    ax2.plot([-0.4, B_m + 0.4], [Df_m, Df_m], color='#78350F', lw=2, label='Finished Ground Level')
-    ax2.add_patch(plt.Rectangle((-0.04, 0.04), B_m + 0.08, 0.04, color='#CBD5E1', ec='#64748B', lw=1)) # Lean concrete
-    ax2.add_patch(plt.Rectangle((0, 0.08), B_m, H_cm/100, color='#E2E8F0', ec='#1E3A8A', lw=2.5)) # Footing block
-    ax2.add_patch(plt.Rectangle((cx, 0.08 + H_cm/100), col_bx/100, Df_m - (0.08 + H_cm/100) + 0.3, color='#FEE2E2', ec='#DC2626', lw=2)) # Column stem
+    # ==============================================================
+    # DRAWING 2: CROSS SECTION ELEVATION (รูปตัด)
+    # ==============================================================
+    lean_thick = 0.05
+    footing_base_y = lean_thick
     
-    # Bottom mesh with standard 90 deg hooks
-    ry = 0.08 + 0.075
-    ax2.plot([0.075, B_m - 0.075], [ry, ry], color='#3B82F6', lw=2.5)
-    ax2.plot([0.075, 0.075], [ry, ry + 0.15], color='#3B82F6', lw=2.5)
-    ax2.plot([B_m - 0.075, B_m - 0.075], [ry, ry + 0.15], color='#3B82F6', lw=2.5)
+    # 2.1 Soil & Ground Level
+    ax2.plot([-0.5, B_m + 0.5], [Df_m, Df_m], color='#451A03', lw=1.5) # FGL
+    ax2.text(B_m + 0.1, Df_m + 0.05, "F.G.L.", color='#451A03', fontsize=9, fontweight='bold')
     
-    # Main column starter dowel rebars
-    ax2.plot([cx + 0.04, cx + 0.04], [0.08 + 0.075, Df_m + 0.2], color='#DC2626', lw=2)
-    ax2.plot([cx + (col_bx/100) - 0.04, cx + (col_bx/100) - 0.04], [0.08 + 0.075, Df_m + 0.2], color='#DC2626', lw=2)
-
-    ax2.set_xlim(-0.4, B_m + 0.4)
-    ax2.set_ylim(-0.1, Df_m + 0.5)
-    ax2.set_title("STRUCTURAL EMBEDMENT ELEVATION (SECTION VIEW)", fontsize=11, fontweight='bold', color='#1E3A8A')
+    # 2.2 Lean Concrete (Hatch dots)
+    ax2.add_patch(plt.Rectangle((-0.05, 0), B_m + 0.1, lean_thick, facecolor='#E2E8F0', hatch='...', edgecolor='#64748B', lw=1))
+    ax2.text(B_m + 0.15, lean_thick/2, "Lean Concrete 5cm", color='#64748B', fontsize=8, va='center')
+    
+    # 2.3 Main Footing (Hatch lines)
+    H_m = H_cm / 100
+    ax2.add_patch(plt.Rectangle((0, footing_base_y), B_m, H_m, facecolor='#F1F5F9', hatch='', edgecolor='#0F172A', lw=2))
+    
+    # 2.4 Column Stem (with breakline)
+    col_top = Df_m + 0.4
+    ax2.add_patch(plt.Rectangle((col_x, footing_base_y + H_m), col_bx/100, col_top - (footing_base_y + H_m), facecolor='#FEE2E2', edgecolor='#0F172A', lw=1.5))
+    ax2.plot([col_x - 0.05, col_x + col_bx/100 + 0.05], [col_top, col_top + 0.05], color='#0F172A', lw=1.5) # Breakline part 1
+    ax2.plot([col_x - 0.05, col_x + col_bx/100 + 0.05], [col_top + 0.05, col_top + 0.1], color='#0F172A', lw=1.5) # Breakline part 2
+    
+    # 2.5 Reinforcement Details
+    rx1, rx2 = cover, B_m - cover
+    ry = footing_base_y + cover
+    
+    # Bottom Rebar (X-Axis) Line with hooks
+    ax2.plot([rx1, rx2], [ry, ry], color='#1D4ED8', lw=2.5)
+    ax2.plot([rx1, rx1], [ry, ry + 0.15], color='#1D4ED8', lw=2.5) # 90-deg hook left
+    ax2.plot([rx2, rx2], [ry, ry + 0.15], color='#1D4ED8', lw=2.5) # 90-deg hook right
+    
+    # Bottom Rebar (Y-Axis) Dots (Cross section)
+    for i in range(min(bars_count_y, 15)):
+        dot_x = rx1 + i * ((rx2 - rx1) / (min(bars_count_y, 15) - 1))
+        ax2.plot(dot_x, ry + 0.02, marker='o', markersize=4, color='#DC2626')
+        
+    # Column Dowels
+    dowel_x1 = col_x + 0.05
+    dowel_x2 = col_x + (col_bx/100) - 0.05
+    ax2.plot([dowel_x1, dowel_x1], [ry + 0.02, col_top + 0.1], color='#047857', lw=2)
+    ax2.plot([dowel_x2, dowel_x2], [ry + 0.02, col_top + 0.1], color='#047857', lw=2)
+    
+    # Dowel hooks at bottom
+    ax2.plot([dowel_x1, dowel_x1 - 0.1], [ry + 0.02, ry + 0.02], color='#047857', lw=2)
+    ax2.plot([dowel_x2, dowel_x2 + 0.1], [ry + 0.02, ry + 0.02], color='#047857', lw=2)
+    
+    # 2.6 Section Dimension Lines
+    draw_dim(ax2, 0, -0.15, B_m, -0.15, f"B = {B_m:.2f} m", offset_y=-0.05) # Width
+    
+    # Vertical Dims
+    ax2.plot([-0.2, -0.1], [footing_base_y, footing_base_y], color='#475569', lw=1)
+    ax2.plot([-0.2, -0.1], [footing_base_y + H_m, footing_base_y + H_m], color='#475569', lw=1)
+    ax2.plot([-0.15, -0.15], [footing_base_y, footing_base_y + H_m], color='#475569', lw=1)
+    ax2.text(-0.25, footing_base_y + H_m/2, f"H = {H_cm:.0f} cm", ha='center', va='center', color='#0F172A', fontsize=9, rotation=90)
+    
+    ax2.plot([-0.35, -0.25], [footing_base_y + H_m, footing_base_y + H_m], color='#475569', lw=1)
+    ax2.plot([-0.35, -0.25], [Df_m, Df_m], color='#475569', lw=1)
+    ax2.plot([-0.3, -0.3], [footing_base_y + H_m, Df_m], color='#475569', lw=1)
+    ax2.text(-0.4, (footing_base_y + H_m + Df_m)/2, f"Overburden", ha='center', va='center', color='#0F172A', fontsize=8, rotation=90)
+    
+    ax2.set_xlim(-0.6, B_m + 0.6)
+    ax2.set_ylim(-0.3, Df_m + 0.6)
+    ax2.set_aspect('equal', adjustable='datalim')
+    ax2.set_title("SECTION ELEVATION", fontsize=12, fontweight='bold', color='#1E3A8A', pad=15)
     ax2.axis('off')
-    ax2.text(B_m + 0.03, 0.08 + (H_cm/200), f"H = {H_cm:.0f} cm", va='center', weight='bold')
-    ax2.text(-0.05, Df_m, f"Df = {Df_m:.2f} m", ha='right', va='center', color='#78350F', weight='bold')
+    
+    # 2.7 Annotation Callouts
+    ax2.annotate(f"{bars_count_x} - DB16 Main Bar", xy=(rx2 - 0.2, ry), xytext=(rx2 + 0.2, ry - 0.2),
+                 arrowprops=dict(facecolor='black', arrowstyle='->', lw=1), fontsize=8)
+    ax2.annotate(f"{bars_count_y} - DB16 Cross Bar", xy=(rx1 + 0.2, ry + 0.02), xytext=(rx1 - 0.4, ry - 0.2),
+                 arrowprops=dict(facecolor='black', arrowstyle='->', lw=1), fontsize=8)
 
     st.pyplot(fig)
