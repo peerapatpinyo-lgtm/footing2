@@ -214,40 +214,87 @@ tab_dash, tab_geo, tab_struct, tab_draw = st.tabs([
 ])
 
 with tab_dash:
-    st.subheader("💡 Foundation Key Performance Indicators (KPIs)")
-    mc1, mc2, mc3, mc4 = st.columns(4)
+    st.subheader("💡 Foundation Performance & Utilization Dashboard")
     
-    with mc1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Max Soil Pressure ($q_{max}$)", f"{sls['q_max']:.2f} t/m²", f"Limit: {qa_allow:.1f}")
-        status = "<span class='status-pass'>PASS</span>" if sls['q_max'] <= qa_allow else "<span class='status-fail'>FAIL</span>"
-        st.markdown(f"Bearing Capacity: {status}", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    # ฟังก์ชันสร้าง Visual Progress Bar (HTML/CSS)
+    def render_utilization_bar(label, demand, capacity, is_fs=False):
+        # ถ้าเป็น Factor of Safety (is_fs=True) ค่า demand ควรมากกว่า capacity
+        if is_fs:
+            ratio = capacity / demand if demand > 0 else 1.5  # ยิ่งมากยิ่งดี (ratio ต่ำ)
+            val_str, cap_str = f"{demand:.2f}", f"≥ {capacity:.2f}"
+        else:
+            ratio = demand / capacity if capacity > 0 else 1.5 # ยิ่งน้อยยิ่งดี
+            val_str, cap_str = f"{demand:.2f}", f"≤ {capacity:.2f}"
+            
+        ratio_pct = min(ratio * 100, 100)
         
-    with mc2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("FS Overturning (X)", f"{sls['FS_ovr_x']:.2f}", "Target ≥ 1.50")
-        status = "<span class='status-pass'>PASS</span>" if sls['FS_ovr_x'] >= 1.5 else "<span class='status-fail'>FAIL</span>"
-        st.markdown(f"Stability Status: {status}", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Color Coding: < 80% เขียว, 80-100% เหลือง, > 100% แดง
+        if ratio <= 0.8:
+            color = "#10B981" # Green
+        elif ratio <= 1.0:
+            color = "#F59E0B" # Yellow (Warning)
+        else:
+            color = "#EF4444" # Red (Fail)
+            
+        status = "PASS" if ratio <= 1.0 else "FAIL"
         
-    with mc3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("FS Sliding", f"{sls['FS_slide']:.2f}", "Target ≥ 1.50")
-        status = "<span class='status-pass'>PASS</span>" if sls['FS_slide'] >= 1.5 else "<span class='status-fail'>FAIL</span>"
-        st.markdown(f"Sliding Status: {status}", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        return f"""
+        <div style="background-color: #F8FAFC; padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-weight: 600; color: #1E293B;">
+                <span style="font-size: 15px;">{label}</span>
+                <span style="color: {color}; font-size: 15px;">Demand: {val_str} | Limit: {cap_str} 
+                <span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 4px; margin-left: 10px; font-size: 12px;">{status}</span>
+                </span>
+            </div>
+            <div style="width: 100%; background-color: #CBD5E1; border-radius: 5px; height: 12px; overflow: hidden;">
+                <div style="width: {ratio_pct}%; background-color: {color}; height: 100%; transition: width 0.5s ease-in-out;"></div>
+            </div>
+            <div style="text-align: right; margin-top: 5px; font-size: 12px; color: #64748B;">
+                Utilization: {ratio*100:.1f}%
+            </div>
+        </div>
+        """
+
+    # แบ่งครึ่งหน้าจอ ซ้าย: Geotechnical, ขวา: Structural
+    col_geo, col_str = st.columns(2)
+    
+    with col_geo:
+        st.markdown('<div class="section-title">🪨 Geotechnical Safety</div>', unsafe_allow_html=True)
+        # 1. Soil Bearing Capacity
+        st.markdown(render_utilization_bar(
+            "Max Soil Bearing Pressure (t/m²)", 
+            sls['q_max'], qa_allow
+        ), unsafe_allow_html=True)
         
-    with mc4:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Two-Way Shear Stress", f"{uls['v_u_punch']:.1f} ksc", f"Limit: {uls['phi_v_c_punch']:.1f}")
-        status = "<span class='status-pass'>PASS</span>" if uls['v_u_punch'] <= uls['phi_v_c_punch'] else "<span class='status-fail'>FAIL</span>"
-        st.markdown(f"Punching Status: {status}", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        # 2. Overturning FS (X-Axis)
+        st.markdown(render_utilization_bar(
+            "Factor of Safety: Overturning (X)", 
+            sls['FS_ovr_x'], 1.50, is_fs=True
+        ), unsafe_allow_html=True)
+        
+        # 3. Sliding FS
+        st.markdown(render_utilization_bar(
+            "Factor of Safety: Sliding", 
+            sls['FS_slide'], 1.50, is_fs=True
+        ), unsafe_allow_html=True)
+
+    with col_str:
+        st.markdown('<div class="section-title">🧱 Structural Concrete Safety</div>', unsafe_allow_html=True)
+        # 4. Wide-beam Shear
+        st.markdown(render_utilization_bar(
+            "One-Way Shear Stress (ksc)", 
+            uls['v_u_wide_max'], uls['phi_v_c_wide']
+        ), unsafe_allow_html=True)
+        
+        # 5. Punching Shear
+        st.markdown(render_utilization_bar(
+            "Two-Way Punching Shear (ksc)", 
+            uls['v_u_punch'], uls['phi_v_c_punch']
+        ), unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### 📋 Executive Construction Procurement Specification")
-    st.info(f"📐 **Footing Dimensions:** Width B = {B_m:.2f} m | Length L = {L_m:.2f} m | Thickness H = {H_cm:.0f} cm (Effective Depth d = {designer.d_cm:.1f} cm)")
+    st.info(f"📐 **Footing Dimensions:** Width B = **{B_m:.2f}** m | Length L = **{L_m:.2f}** m | Thickness H = **{H_cm:.0f}** cm (Effective Depth d = **{designer.d_cm:.1f}** cm)")
     
     sc1, sc2 = st.columns(2)
     sc1.success(f"🧲 **X-Axis Bottom Mesh:** Provide **{bars_count_x}x DB16** Bars spaced at **@{space_x:.1f} cm** c/c")
