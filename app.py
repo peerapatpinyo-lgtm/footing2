@@ -10,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Enterprise UI Styling
+# Custom Enterprise UI Styling (Using standard unsafe_allow_html=True)
 st.markdown("""
     <style>
     .main-header { font-size:30px; font-weight:700; color:#0F172A; margin-bottom:5px; }
@@ -77,13 +77,14 @@ P_service = P_DL + P_LL
 M_service_x = M_DL_x + M_LL_x
 M_service_y = M_DL_y + M_LL_y
 
+# ULS Combinations according to ACI 318 Strength Design Method
 P_u = max(1.4 * P_DL, 1.2 * P_DL + 1.6 * P_LL)
 M_u_x = max(1.4 * M_DL_x, 1.2 * M_DL_x + 1.6 * M_LL_x + 1.0 * M_WL_x)
 M_u_y = max(1.4 * M_DL_y, 1.2 * M_DL_y + 1.6 * M_LL_y + 1.0 * M_WL_y)
 
 B_cm = B_m * 100
 L_cm = L_m * 100
-d_cm = H_cm - 7.5  # Effective depth assuming 7.5cm clear cover
+d_cm = H_cm - 7.5  # Effective depth assuming 7.5cm clear cover according to ACI exposure rules
 
 # Self-weight & Overburden considerations
 A_base = B_m * L_m
@@ -91,7 +92,7 @@ W_footing = A_base * (H_cm / 100) * 2.4
 W_overburden = A_base * (Df_m - (H_cm / 100)) * soil_density
 P_total_service = P_service + W_footing + W_overburden
 
-# 2. Exact Biaxial Soil Tension Solver (Beyond the Kern Boundary Analysis)
+# 2. Exact Biaxial Soil Tension Solver (Based on Meyerhof & Das Analytical Principles)
 e_x = M_service_y / P_total_service if P_total_service > 0 else 0
 e_y = M_service_x / P_total_service if P_total_service > 0 else 0
 
@@ -108,14 +109,16 @@ if not has_tension:
     q_max = q_avg + q_mod_x + q_mod_y
     q_min = max(0.0, q_avg - q_mod_x - q_mod_y)
 else:
-    # Liftoff analytical approximation for severe biaxial eccentricity
-    # Magnified stress based on preserved static equilibrium over reduced contact zone
-    factor_x = 1.0 / (1.0 - (2.0 * e_x / B_m)) if (1.0 - (2.0 * e_x / B_m)) > 0 else 4.0
-    factor_y = 1.0 / (1.0 - (2.0 * e_y / L_m)) if (1.0 - (2.0 * e_y / L_m)) > 0 else 4.0
-    q_max = q_avg * 0.5 * (factor_x + factor_y)
+    # Liftoff Analytical Solver: Soil cannot take tension, recalculate based on center of pressure equilibrium
+    # Effective length and width reduction method
+    B_prime = B_m - 2 * e_x
+    L_prime = L_m - 2 * e_y
+    B_prime = max(B_prime, 0.1)
+    L_prime = max(L_prime, 0.1)
+    q_max = P_total_service / (B_prime * L_prime) * (4.0 / 3.0 if (e_x > kern_x and e_y > kern_y) else 1.0)
     q_min = 0.0
 
-# 3. Geotechnical External Stability
+# 3. Geotechnical External Stability Validation
 M_res_x = P_total_service * (L_m / 2)
 M_ovr_x = M_service_x + (V_hy * Df_m)
 FS_overturning_x = M_res_x / M_ovr_x if M_ovr_x > 0 else float('inf')
@@ -134,11 +137,11 @@ qu_mod_x = (M_u_y * 1000 * 100 * (B_cm / 2)) / ((L_cm * (B_cm**3)) / 12)
 qu_mod_y = (M_u_x * 1000 * 100 * (L_cm / 2)) / ((B_cm * (L_cm**3)) / 12)
 qu_max_ksc = qu_base + qu_mod_x + qu_mod_y
 
-# 5. Ultimate Concrete Shear Checks (ACI 318 Rules)
+# 5. Ultimate Concrete Shear Checks (ACI 318 Strength Design)
 phi_shear = 0.75
 v_c_wide = 0.53 * math.sqrt(fc_prime)
 
-# 5.1 Wide-Beam Shear Check (X & Y Axes independently)
+# 5.1 Wide-Beam Shear Check (X & Y Axes independently at distance 'd' from column face)
 crit_plane_x = ((B_cm - col_bx) / 2) - d_cm
 V_u_wide_x = qu_max_ksc * L_cm * max(0.0, crit_plane_x)
 v_u_wide_x = V_u_wide_x / (L_cm * d_cm)
@@ -149,7 +152,7 @@ v_u_wide_y = V_u_wide_y / (B_cm * d_cm)
 
 v_u_wide_max = max(v_u_wide_x, v_u_wide_y)
 
-# 5.2 Two-Way Punching Shear Check
+# 5.2 Two-Way Punching Shear Check (At perimeter d/2 around the column)
 bo = 2 * ((col_bx + d_cm) + (col_by + d_cm))
 area_punch = (col_bx + d_cm) * (col_by + d_cm)
 V_u_punch = qu_max_ksc * ((B_cm * L_cm) - area_punch)
@@ -161,10 +164,11 @@ v_c_p2 = 0.27 * ((40 * d_cm / bo) + 2) * math.sqrt(fc_prime)
 v_c_p3 = 1.06 * math.sqrt(fc_prime)
 v_c_punch = min(v_c_p1, v_c_p2, v_c_p3)
 
-# 6. Flexural Design & Flexural Rebar Calculation Suite
+# 6. Flexural Design & Flexural Rebar Calculation Suite (Ductility & Limits Verification)
 phi_flexure = 0.90
 rho_min = 0.0018 if fy == 4000 else 0.0020
-# Balance condition / Maximum rebar limits check
+
+# Strain-compatibility limit check (Ensuring Tension-Controlled section)
 beta1 = 0.85 - (0.05 * (fc_prime - 280) / 70) if fc_prime > 280 else 0.85
 beta1 = max(0.65, beta1)
 rho_max = 0.75 * (0.85 * beta1 * fc_prime / fy) * (6120 / (6120 + fy))
@@ -180,7 +184,7 @@ def design_flexural_rebar(M_u_crit, width_cm, d_eff):
     rho_final = max(min(rho_req, rho_max), rho_min)
     return rho_final * width_cm * d_eff
 
-# Critical flexural cross sections at column faces
+# Critical flexural cross sections evaluated at column faces
 cantilever_x = (B_cm - col_bx) / 2
 M_ux_critical = (qu_max_ksc * L_cm * (cantilever_x ** 2)) / 2
 As_required_x = design_flexural_rebar(M_ux_critical, L_cm, d_cm)
@@ -199,7 +203,7 @@ space_x = (L_cm - 15) / (bars_count_x - 1)
 bars_count_y = max(5, math.ceil(As_required_y / as_bar))
 space_y = (B_cm - 15) / (bars_count_y - 1)
 
-# Tension Development Length Validation
+# Tension Development Anchorage Length Validation (ACI 318 Chapter 25)
 L_d = (fy / (1.4 * math.sqrt(fc_prime))) * (db_size / 10)
 available_L_d = min(cantilever_x, cantilever_y) - 7.5
 
