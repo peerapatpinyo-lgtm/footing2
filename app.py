@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import math
 from dataclasses import dataclass
 import plotly.graph_objects as go
-from scipy.optimize import minimize_scalar
 import warnings
 warnings.filterwarnings('ignore')
 
