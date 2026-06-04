@@ -2,8 +2,10 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Optional
 import plotly.graph_objects as go
+import plotly.express as px
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,6 +23,28 @@ class Loads:
 class Properties:
     qa_allow: float; fc_prime: float; fy: float
     soil_density: float; base_friction: float
+
+@dataclass
+class SoilProfile:
+    """Geotechnical parameters for bearing capacity & settlement"""
+    # Shear strength
+    cohesion: float = 0.0          # c  (ton/m²)
+    phi_deg: float  = 30.0         # φ  (degrees)
+    # Settlement – elastic
+    Es: float       = 2000.0       # Modulus of elasticity (ton/m²)
+    nu: float       = 0.3          # Poisson's ratio
+    # Settlement – consolidation
+    Cc: float       = 0.3          # Compression index
+    Cs: float       = 0.05         # Swelling index
+    e0: float       = 0.8          # Initial void ratio
+    OCR: float      = 1.0          # Over-consolidation ratio
+    H_clay: float   = 3.0          # Clay layer thickness (m)
+    sigma_v0: float = 10.0         # Initial effective vertical stress at mid-layer (ton/m²)
+    soil_density: float = 1.8     # Unit weight of soil (ton/m³)
+    # Bearing capacity method
+    method: str     = "Meyerhof"   # "Terzaghi" or "Meyerhof"
+    # Failure mode (Terzaghi only)
+    failure_mode: str = "General"  # "General", "Local", "Punching"
 
 @dataclass
 class Geometry:
@@ -357,9 +381,432 @@ class FoundationDesigner:
 
 
 # ==========================================
-# 3. STREAMLIT USER INTERFACE
+# 3. BEARING CAPACITY ENGINE
 # ==========================================
-st.set_page_config(page_title="Advanced Biaxial Foundation Suite v2", layout="wide", initial_sidebar_state="expanded")
+class BearingCapacityEngine:
+    """
+    Computes ultimate & allowable bearing capacity.
+    Supports Terzaghi (General / Local / Punching) and Meyerhof
+    (with shape, depth, inclination factors).
+    """
+
+    def __init__(self, soil: SoilProfile, geo: Geometry, loads: Loads):
+        self.soil  = soil
+        self.geo   = geo
+        self.loads = loads
+        self.phi   = math.radians(soil.phi_deg)
+
+    # ── Terzaghi Bearing Capacity Factors ───────────────────────
+    def _terzaghi_factors(self, phi_use):
+        """Nq, Nc, Nγ for given phi (radians)."""
+        if phi_use == 0:
+            Nq = 1.0; Nc = 5.7; Ng = 0.0
+        else:
+            Nq = math.exp(math.pi * math.tan(phi_use)) * (math.tan(math.radians(45) + phi_use / 2)) ** 2
+            Nc = (Nq - 1) / math.tan(phi_use)
+            Ng = 2 * (Nq + 1) * math.tan(phi_use)
+        return Nq, Nc, Ng
+
+    def terzaghi(self):
+        c   = self.soil.cohesion
+        phi = self.phi
+        γ   = self.props_gamma()
+        Df  = self.geo.Df
+        B   = self.geo.B if not (self.geo.shape == "circular") else self.geo.D_circ
+
+        mode = self.soil.failure_mode
+        phi_use = phi
+        c_use   = c
+
+        if mode == "Local":
+            phi_use = math.atan(0.667 * math.tan(phi))
+            c_use   = 0.667 * c
+        elif mode == "Punching":
+            phi_use = math.atan(0.5 * math.tan(phi))
+            c_use   = 0.5 * c
+
+        Nq, Nc, Ng = self._terzaghi_factors(phi_use)
+
+        is_circ  = (self.geo.shape == "circular")
+        is_strip = False  # always spread footing here
+
+        if is_circ:
+            qu = 1.3 * c_use * Nc + γ * Df * Nq + 0.3 * γ * B * Ng
+        else:
+            # Rectangular shape factors (Terzaghi)
+            B_L = B / self.geo.L
+            sc = 1 + 0.3 * B_L
+            sq = 1 + B_L * math.tan(phi_use) if phi_use > 0 else 1.0
+            sg = max(1 - 0.4 * B_L, 0.6)
+            qu = c_use * Nc * sc + γ * Df * Nq * sq + 0.5 * γ * B * Ng * sg
+
+        FS_bearing = 3.0
+        qa_computed = qu / FS_bearing
+
+        return {
+            "method": f"Terzaghi ({mode})",
+            "phi_use_deg": math.degrees(phi_use),
+            "c_use": c_use,
+            "Nq": Nq, "Nc": Nc, "Ng": Ng,
+            "qu_ultimate": qu,
+            "FS_bearing": FS_bearing,
+            "qa_computed": qa_computed,
+        }
+
+    # ── Meyerhof Bearing Capacity Factors ───────────────────────
+    def _meyerhof_factors(self):
+        phi = self.phi
+        if phi == 0:
+            Nq = 1.0; Nc = 5.14; Ng = 0.0
+        else:
+            Nq = math.exp(math.pi * math.tan(phi)) * (math.tan(math.radians(45) + phi / 2)) ** 2
+            Nc = (Nq - 1) / math.tan(phi)
+            Ng = (Nq - 1) * math.tan(1.4 * phi)
+        return Nq, Nc, Ng
+
+    def meyerhof(self):
+        c   = self.soil.cohesion
+        phi = self.phi
+        γ   = self.props_gamma()
+        Df  = self.geo.Df
+        is_circ = (self.geo.shape == "circular")
+        B = self.geo.D_circ if is_circ else self.geo.B
+        L = B if is_circ else self.geo.L
+
+        Nq, Nc, Ng = self._meyerhof_factors()
+
+        # Shape factors
+        if phi == 0:
+            sc = 1 + 0.2 * (B / L)
+            sq = sg = 1.0
+        else:
+            sc = 1 + 0.2 * (B / L) * math.tan(math.radians(45) + phi / 2) ** 2
+            sq = sg = 1 + 0.1 * (B / L) * math.tan(math.radians(45) + phi / 2) ** 2
+
+        # Depth factors
+        Df_B = Df / B
+        if phi == 0:
+            dc = 1 + 0.4 * Df_B
+            dq = dg = 1.0
+        else:
+            dc = 1 + 0.4 * Df_B
+            dq = dg = 1 + 0.1 * Df_B * math.tan(math.radians(45) + phi / 2) ** 2
+
+        # Inclination factors (resultant horizontal load)
+        P_service = self.loads.P_DL + self.loads.P_LL
+        V_h = math.sqrt(self.loads.V_hx ** 2 + self.loads.V_hy ** 2)
+        alpha_deg = math.degrees(math.atan(V_h / P_service)) if P_service > 0 else 0
+        if phi == 0:
+            ic = 1 - alpha_deg / 90
+            iq = ig = 1.0
+        else:
+            ic = iq = (1 - alpha_deg / 90) ** 2
+            ig = (1 - alpha_deg / phi) ** 2 if phi > 0 else 1.0
+
+        qu = (c * Nc * sc * dc * ic
+              + γ * Df * Nq * sq * dq * iq
+              + 0.5 * γ * B * Ng * sg * dg * ig)
+
+        FS_bearing = 3.0
+        qa_computed = qu / FS_bearing
+
+        return {
+            "method": "Meyerhof",
+            "Nq": Nq, "Nc": Nc, "Ng": Ng,
+            "sc": sc, "sq": sq, "sg": sg,
+            "dc": dc, "dq": dq, "dg": dg,
+            "ic": ic, "iq": iq, "ig": ig,
+            "alpha_deg": alpha_deg,
+            "qu_ultimate": qu,
+            "FS_bearing": FS_bearing,
+            "qa_computed": qa_computed,
+        }
+
+    def props_gamma(self):
+        return self.soil.soil_density if hasattr(self.soil, 'soil_density') else 1.8
+
+    def run(self):
+        if self.soil.method == "Terzaghi":
+            return self.terzaghi()
+        else:
+            return self.meyerhof()
+
+    def run_both(self):
+        return {"Terzaghi": self.terzaghi(), "Meyerhof": self.meyerhof()}
+
+
+# ==========================================
+# 4. SETTLEMENT ENGINE
+# ==========================================
+class SettlementEngine:
+    """
+    Elastic (Schleicher) + Primary Consolidation settlement.
+    Units: tons, metres.
+    """
+
+    def __init__(self, soil: SoilProfile, geo: Geometry, q_net: float):
+        self.soil  = soil
+        self.geo   = geo
+        self.q_net = q_net   # net foundation pressure (ton/m²)
+
+    # ── Elastic Settlement ───────────────────────────────────────
+    def elastic(self):
+        """
+        Si = q_net · B · (1-ν²) / Es · If
+        If = influence factor (Bowles, ~0.82 for flexible square, ~0.54 rigid)
+        """
+        B  = self.geo.D_circ if self.geo.shape == "circular" else self.geo.B
+        L  = B if self.geo.shape == "circular" else self.geo.L
+        Es = self.soil.Es
+        nu = self.soil.nu
+
+        # Influence factor (Steinbrenner approximation for L/B)
+        LB = L / B
+        If = 0.82 * (1 + 0.22 * (LB - 1))  # flexible, centre point
+
+        Si_m = self.q_net * B * (1 - nu ** 2) / Es * If
+        Si_cm = Si_m * 100
+        return {"Si_m": Si_m, "Si_cm": Si_cm, "If": If}
+
+    # ── Consolidation Settlement ─────────────────────────────────
+    def consolidation(self):
+        """
+        Sc = Cc·H/(1+e0)·log10[(σ'v0 + Δσ) / σ'v0]   (NC clay)
+        Sc = Cs·H/(1+e0)·log10[(σ'v0 + Δσ) / σ'vc]
+           + Cc·H/(1+e0)·log10[(σ'vc + Δσ) / σ'vc]    (OC clay, if stress exceeds precon.)
+        Δσ estimated via Boussinesq 2:1 distribution at mid-layer.
+        """
+        Cc   = self.soil.Cc
+        Cs   = self.soil.Cs
+        e0   = self.soil.e0
+        OCR  = self.soil.OCR
+        H    = self.soil.H_clay
+        sv0  = self.soil.sigma_v0
+        svc  = sv0 * OCR          # preconsolidation stress
+
+        B   = self.geo.D_circ if self.geo.shape == "circular" else self.geo.B
+        L   = B if self.geo.shape == "circular" else self.geo.L
+        Df  = self.geo.Df
+
+        # Boussinesq 2:1 stress increment at mid-layer depth below footing base
+        z   = H / 2
+        dsigma = self.q_net * B * L / ((B + z) * (L + z))
+
+        sv1 = sv0 + dsigma   # final stress
+
+        if OCR <= 1.0 or sv0 >= svc:  # NC clay
+            if sv0 > 0:
+                Sc = (Cc * H / (1 + e0)) * math.log10(sv1 / sv0)
+            else:
+                Sc = 0.0
+            regime = "Normally Consolidated (NC)"
+        else:
+            if sv1 <= svc:             # OC – stays in recompression
+                Sc = (Cs * H / (1 + e0)) * math.log10(sv1 / sv0)
+                regime = "Over-Consolidated (OC) – recompression only"
+            else:                       # OC – crosses precon. pressure
+                Sc = ((Cs * H / (1 + e0)) * math.log10(svc / sv0)
+                    + (Cc * H / (1 + e0)) * math.log10(sv1 / svc))
+                regime = "Over-Consolidated (OC) – virgin compression"
+
+        Sc_cm = Sc * 100
+        return {
+            "Sc_m": Sc, "Sc_cm": Sc_cm,
+            "dsigma": dsigma, "sv0": sv0, "svc": svc, "sv1": sv1,
+            "regime": regime,
+        }
+
+    def total(self):
+        el  = self.elastic()
+        con = self.consolidation()
+        St  = el["Si_m"] + con["Sc_m"]
+        return {
+            "elastic": el,
+            "consolidation": con,
+            "St_m": St,
+            "St_cm": St * 100,
+        }
+
+
+# ==========================================
+# 5. COMBINED FOOTING DESIGNER
+# ==========================================
+@dataclass
+class ColumnData:
+    P_DL: float; P_LL: float          # tons
+    cx: float;   cy: float            # cm
+    x_pos: float                       # position along footing length (m from left edge)
+
+class CombinedFootingDesigner:
+    """
+    Rectangular or Trapezoidal combined footing for 2 columns.
+    Columns are aligned along the L (length) axis.
+    """
+
+    def __init__(self, col1: ColumnData, col2: ColumnData,
+                 B: float, H_cm: float, Df: float,
+                 props: Properties, soil: SoilProfile,
+                 footing_type: str = "Rectangular"):
+        self.col1  = col1
+        self.col2  = col2
+        self.B     = B
+        self.H_cm  = H_cm
+        self.Df    = Df
+        self.props = props
+        self.soil  = soil
+        self.ftype = footing_type
+        self.d_cm  = H_cm - 7.5
+
+    def _total_loads(self):
+        P1 = self.col1.P_DL + self.col1.P_LL
+        P2 = self.col2.P_DL + self.col2.P_LL
+        P_total = P1 + P2
+        # Resultant location from left edge
+        x_R = (P1 * self.col1.x_pos + P2 * self.col2.x_pos) / P_total
+        return P1, P2, P_total, x_R
+
+    def design_rectangular(self):
+        P1, P2, P_total, x_R = self._total_loads()
+        # Length such that resultant is at centroid → L = 2*x_R (if col1 at 0)
+        col1_edge = 0.3      # overhang from col1 face
+        col2_edge = 0.3
+        x1 = self.col1.x_pos
+        x2 = self.col2.x_pos
+        L  = 2 * (x_R - col1_edge) + col1_edge + col2_edge
+
+        # Uniform bearing pressure (service)
+        A  = self.B * L
+        H_m = self.H_cm / 100
+        W_ftg = A * H_m * 2.4
+        W_soil= A * (self.Df - H_m) * self.soil.soil_density
+        q_net  = (P_total) / A
+        q_total = (P_total + W_ftg + W_soil) / A
+
+        # Shear & moment diagrams (simplified beam model)
+        n  = 200
+        xs = np.linspace(0, L, n)
+        qu_beam = (P_total * 1000) / (self.B * 100 * (L * 100))  # kg/cm²
+
+        # Reactions are distributed (upward) – treat as beam on elastic foundation (simplified)
+        w_up = P_total / L   # ton/m upward distributed
+
+        # Shear diagram (integrating from left)
+        V_arr = np.zeros(n)
+        M_arr = np.zeros(n)
+        for i, x in enumerate(xs):
+            shear = -w_up * x
+            if x >= x1:
+                shear += P1
+            if x >= x2:
+                shear += P2
+            V_arr[i] = shear
+
+        for i, x in enumerate(xs):
+            mom = -w_up * x ** 2 / 2
+            if x >= x1:
+                mom += P1 * (x - x1)
+            if x >= x2:
+                mom += P2 * (x - x2)
+            M_arr[i] = mom
+
+        M_max_pos = float(np.max(M_arr))
+        M_max_neg = float(np.min(M_arr))
+
+        return {
+            "type": "Rectangular", "L": L, "B": self.B,
+            "x_R": x_R, "P_total": P_total,
+            "q_net": q_net, "q_total": q_total,
+            "qu_beam": qu_beam,
+            "xs": xs, "V_arr": V_arr, "M_arr": M_arr,
+            "M_max_pos": M_max_pos, "M_max_neg": M_max_neg,
+            "x1": x1, "x2": x2,
+        }
+
+    def design_trapezoidal(self):
+        """
+        Trapezoidal footing: adjust widths b1, b2 at each end so
+        centroid of trapezoid coincides with resultant x_R.
+        Centroid of trapezoid = L*(2*b2+b1)/(3*(b1+b2)) from b1 end.
+        """
+        P1, P2, P_total, x_R = self._total_loads()
+
+        x1 = self.col1.x_pos
+        x2 = self.col2.x_pos
+        L  = x2 - x1 + 0.6   # total length with overhang
+
+        # Centroid of trapezoid from left: xc = L*(2*b2+b1)/(3*(b1+b2)) = x_R
+        # Let avg_b = (b1+b2)/2 = B (keep average width as input B)
+        # → b1+b2 = 2B, and b1 & b2 from centroid equation:
+        # xc*(b1+b2) = L*(2*b2+b1)/3 → 3*xc*2B = L*(2*b2+b1) → ...
+        # Solve for b1,b2:
+        # 3*xc*(b1+b2) = L*(b1 + 2*b2)
+        # 3*xc*2B = L*b1 + 2*L*b2   and   b1 + b2 = 2B
+        # → b1 = 2B*(3*xc/L - 1)*... (derived below)
+        xc = x_R - (x1 - 0.3)   # centroid from left edge
+        # System: b1+b2=2B, 3*xc*(b1+b2)=L*(b1+2*b2)
+        # 6*B*xc = L*b1 + 2*L*b2 = L*(2B - b2) + 2*L*b2 = 2*B*L + L*b2
+        b2 = (6 * self.B * xc - 2 * self.B * L) / L
+        b1 = 2 * self.B - b2
+        b1 = max(b1, 0.5); b2 = max(b2, 0.5)  # minimum 0.5 m
+
+        A  = (b1 + b2) / 2 * L
+        H_m = self.H_cm / 100
+        W_ftg  = A * H_m * 2.4
+        W_soil = A * (self.Df - H_m) * self.soil.soil_density
+        q_net   = P_total / A
+        q_total = (P_total + W_ftg + W_soil) / A
+
+        n  = 200
+        xs = np.linspace(0, L, n)
+        # Width at each x (linear interpolation)
+        bx = b1 + (b2 - b1) * xs / L
+        # Upward pressure intensity (ton/m) varies with width
+        q_up = P_total / A   # ton/m² (uniform net)
+        w_up = q_up * bx      # ton/m at each x
+
+        # Shear & moment (trapezoidal distributed upward load)
+        V_arr = np.zeros(n)
+        M_arr = np.zeros(n)
+        dx = L / (n - 1)
+
+        for i in range(n):
+            x = xs[i]
+            # cumulative upward force to left of x
+            V_up = float(np.trapz(w_up[:i+1], xs[:i+1]))
+            shear = -V_up
+            if x >= (x1 - (x1 - 0.3)):
+                shear += P1
+            if x >= (x2 - (x1 - 0.3)):
+                shear += P2
+            V_arr[i] = shear
+
+        for i in range(n):
+            x = xs[i]
+            M_up = float(np.trapz(
+                [w_up[j] * (x - xs[j]) for j in range(i+1)],
+                xs[:i+1]
+            ))
+            mom = -M_up
+            dx_1 = x - (x1 - (x1 - 0.3))
+            dx_2 = x - (x2 - (x1 - 0.3))
+            if x >= (x1 - (x1 - 0.3)):
+                mom += P1 * dx_1
+            if x >= (x2 - (x1 - 0.3)):
+                mom += P2 * dx_2
+            M_arr[i] = mom
+
+        return {
+            "type": "Trapezoidal", "L": L, "b1": b1, "b2": b2,
+            "x_R": x_R, "P_total": P_total,
+            "q_net": q_net, "q_total": q_total,
+            "xs": xs, "V_arr": V_arr, "M_arr": M_arr,
+            "M_max_pos": float(np.max(M_arr)),
+            "M_max_neg": float(np.min(M_arr)),
+            "x1": x1, "x2": x2, "bx": bx,
+        }
+
+
+st.set_page_config(page_title="Advanced Biaxial Foundation Suite v3", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -372,8 +819,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🏗️ Advanced Biaxial Foundation Engineering Suite <span style="font-size:16px;color:#64748B;">v2</span></div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">ULS & SLS Design · ACI 318-19 · Rectangular & Circular Footings · Full Wind Load Combinations · Auto-Optimization</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🏗️ Advanced Biaxial Foundation Engineering Suite <span style="font-size:16px;color:#64748B;">v3</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">ULS & SLS · ACI 318-19 · Terzaghi & Meyerhof Bearing Capacity · Elastic + Consolidation Settlement · Combined Footings · Rect. & Circular</div>', unsafe_allow_html=True)
 
 # ──────────────────────────────────────────
 # SIDEBAR INPUTS
@@ -394,13 +841,29 @@ with st.sidebar.expander("📊 Axial, Moments & Shears", expanded=True):
     V_hy = st.sidebar.number_input("Horizontal Shear V_hy (tons)", value=1.8, step=0.1)
 
 st.sidebar.header("🧱 2. Material & Geotechnical Specs")
-with st.sidebar.expander("Properties", expanded=False):
+with st.sidebar.expander("Concrete & Steel", expanded=False):
     qa_allow   = st.sidebar.number_input("Allowable Bearing q_allow (ton/m²)", min_value=1.0, value=20.0, step=0.5)
     fc_prime   = st.sidebar.number_input("Concrete fc' (ksc)", min_value=150, value=280, step=10)
     fy         = st.sidebar.selectbox("Rebar fy", [3000, 4000], index=1,
                      format_func=lambda x: f"Grade 40 (fy={x} ksc)" if x == 3000 else f"SD40 (fy={x} ksc)")
     soil_density  = st.sidebar.number_input("Soil Density (ton/m³)", value=1.8, step=0.1)
     base_friction = st.sidebar.number_input("Base Friction μ", min_value=0.1, max_value=0.7, value=0.50, step=0.05)
+
+with st.sidebar.expander("🌱 Soil Profile (Bearing & Settlement)", expanded=False):
+    bc_method   = st.sidebar.selectbox("Bearing Capacity Method", ["Terzaghi", "Meyerhof", "Both"])
+    fail_mode   = st.sidebar.selectbox("Terzaghi Failure Mode", ["General", "Local", "Punching"])
+    cohesion    = st.sidebar.number_input("Cohesion c (ton/m²)", min_value=0.0, value=0.0, step=0.5)
+    phi_deg     = st.sidebar.number_input("Friction Angle φ (°)", min_value=0.0, max_value=45.0, value=30.0, step=1.0)
+    st.sidebar.markdown("**Elastic Settlement**")
+    Es_soil     = st.sidebar.number_input("Elastic Modulus Es (ton/m²)", min_value=100.0, value=2000.0, step=100.0)
+    nu_soil     = st.sidebar.number_input("Poisson's Ratio ν", min_value=0.1, max_value=0.49, value=0.30, step=0.01)
+    st.sidebar.markdown("**Consolidation Settlement**")
+    Cc_soil     = st.sidebar.number_input("Compression Index Cc", min_value=0.01, value=0.30, step=0.01)
+    Cs_soil     = st.sidebar.number_input("Swelling Index Cs",    min_value=0.001, value=0.05, step=0.005)
+    e0_soil     = st.sidebar.number_input("Initial Void Ratio e₀", min_value=0.1, value=0.80, step=0.05)
+    OCR_soil    = st.sidebar.number_input("OCR", min_value=1.0, value=1.0, step=0.5)
+    H_clay      = st.sidebar.number_input("Clay Layer Thickness (m)", min_value=0.5, value=3.0, step=0.5)
+    sigma_v0    = st.sidebar.number_input("Initial Eff. Stress σ'v0 at mid-layer (ton/m²)", min_value=1.0, value=10.0, step=1.0)
 
 st.sidebar.header("📐 3. Column Dimensions")
 col_bx = st.sidebar.number_input("Column cx (cm)", value=40.0, step=5.0)
@@ -460,11 +923,35 @@ loads    = Loads(P_DL, P_LL, M_DL_x, M_LL_x, M_WL_x, M_DL_y, M_LL_y, M_WL_y, V_h
 props    = Properties(qa_allow, fc_prime, fy, soil_density, base_friction)
 geo      = Geometry(B_m, L_m, H_cm, Df_m, col_bx, col_by,
                     "circular" if is_circular else "rectangular", D_circ)
+soil     = SoilProfile(
+    cohesion=cohesion, phi_deg=phi_deg,
+    Es=Es_soil, nu=nu_soil,
+    Cc=Cc_soil, Cs=Cs_soil, e0=e0_soil, OCR=OCR_soil,
+    H_clay=H_clay, sigma_v0=sigma_v0,
+    soil_density=soil_density,
+    method="Terzaghi" if bc_method == "Terzaghi" else "Meyerhof",
+    failure_mode=fail_mode,
+)
+
 designer = FoundationDesigner(loads, props, geo)
 sls      = designer.analyze_service_state()
 uls      = designer.analyze_ultimate_state()
 bars_x, space_x = designer.design_flexure(uls["M_ux"], designer.L_cm)
 bars_y, space_y = designer.design_flexure(uls["M_uy"], designer.B_cm)
+
+# Bearing capacity
+bc_engine = BearingCapacityEngine(soil, geo, loads)
+if bc_method == "Both":
+    bc_results = bc_engine.run_both()
+elif bc_method == "Terzaghi":
+    bc_results = {"Terzaghi": bc_engine.terzaghi()}
+else:
+    bc_results = {"Meyerhof": bc_engine.meyerhof()}
+
+# Settlement
+q_net_service = sls["P_total"] / designer.A_base - soil_density * Df_m
+sett_engine   = SettlementEngine(soil, geo, max(q_net_service, 0))
+sett_results  = sett_engine.total()
 
 # ──────────────────────────────────────────
 # HELPER: utilization bar
@@ -496,12 +983,15 @@ def render_bar(label, demand, capacity, is_fs=False):
 # ──────────────────────────────────────────
 # TABS
 # ──────────────────────────────────────────
-tab_dash, tab_geo, tab_struct, tab_3d, tab_draw = st.tabs([
+tab_dash, tab_geo, tab_bearing, tab_settle, tab_combined, tab_struct, tab_3d, tab_draw = st.tabs([
     "📊 Safety Dashboard",
     "🪨 Geotechnical",
+    "🏔️ Bearing Capacity",
+    "📉 Settlement",
+    "🔗 Combined Footing",
     "🧱 Structural Design",
     "🌐 3D Soil Pressure",
-    "🎨 Engineering Blueprints",
+    "🎨 Blueprints",
 ])
 
 # ════════════════════════════════════════════
@@ -613,8 +1103,266 @@ with tab_geo:
     cols[2].metric("FS Sliding",       f"{sls['FS_slide']:.2f}",  delta="Req ≥ 1.50")
 
 # ════════════════════════════════════════════
-# TAB 3: STRUCTURAL
+# TAB 3: BEARING CAPACITY
 # ════════════════════════════════════════════
+with tab_bearing:
+    st.markdown("### 🏔️ Ultimate Bearing Capacity Analysis")
+
+    def _bc_table(res, label):
+        qu   = res["qu_ultimate"]
+        qa   = res["qa_computed"]
+        pass_ = qa >= sls["q_max"]
+        color = "#059669" if pass_ else "#DC2626"
+        status = "✅ PASS" if pass_ else "❌ FAIL"
+
+        st.markdown(f"#### {label}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("qᵤ ultimate (t/m²)",    f"{qu:.2f}")
+        c2.metric("qₐ computed (t/m²)",    f"{qa:.2f}")
+        c3.metric("FS bearing",             f"{res['FS_bearing']:.1f}")
+        c4.metric("q_max actual (t/m²)",   f"{sls['q_max']:.2f}",
+                  delta=f"{status}")
+
+        st.markdown(f"""
+        <div style='background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:12px;margin-top:8px;'>
+        <b>Bearing Capacity Factors:</b>&nbsp;
+        N<sub>c</sub> = {res['Nc']:.2f} &nbsp;|&nbsp;
+        N<sub>q</sub> = {res['Nq']:.2f} &nbsp;|&nbsp;
+        N<sub>γ</sub> = {res['Ng']:.2f}
+        </div>""", unsafe_allow_html=True)
+
+        if "sc" in res:   # Meyerhof extras
+            st.markdown(f"""
+            <div style='background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;padding:10px;margin-top:6px;font-size:13px;'>
+            <b>Shape:</b> s<sub>c</sub>={res['sc']:.3f}, s<sub>q</sub>={res['sq']:.3f}, s<sub>γ</sub>={res['sg']:.3f} &nbsp;|&nbsp;
+            <b>Depth:</b> d<sub>c</sub>={res['dc']:.3f}, d<sub>q</sub>={res['dq']:.3f}, d<sub>γ</sub>={res['dg']:.3f} &nbsp;|&nbsp;
+            <b>Inclin:</b> i<sub>c</sub>={res['ic']:.3f}, i<sub>q</sub>={res['iq']:.3f}, i<sub>γ</sub>={res['ig']:.3f}
+            (α={res['alpha_deg']:.1f}°)
+            </div>""", unsafe_allow_html=True)
+
+        with st.expander(f"📐 Detailed Formula – {label}"):
+            if "Terzaghi" in label:
+                st.latex(r"q_u = c \cdot N_c \cdot s_c + \gamma D_f \cdot N_q \cdot s_q + 0.5\,\gamma\,B\,N_\gamma \cdot s_\gamma")
+                st.markdown(f"**c** = {res.get('c_use', cohesion):.2f} t/m², φ = {res.get('phi_use_deg', phi_deg):.1f}°")
+            else:
+                st.latex(r"q_u = c\,N_c\,s_c\,d_c\,i_c + \gamma D_f N_q s_q d_q i_q + 0.5\,\gamma\,B\,N_\gamma\,s_\gamma\,d_\gamma\,i_\gamma")
+            st.latex(rf"q_u = {qu:.2f}\;\text{{t/m}}^2 \quad\Rightarrow\quad q_a = \frac{{q_u}}{{FS}} = \frac{{{qu:.2f}}}{{3.0}} = {qa:.2f}\;\text{{t/m}}^2")
+            st.markdown(f"**Verdict:** q_a ({qa:.2f}) {'≥' if pass_ else '<'} q_max ({sls['q_max']:.2f}) → **{status}**")
+
+    for label, res in bc_results.items():
+        _bc_table(res, label)
+        st.markdown("---")
+
+    # φ sensitivity chart
+    st.markdown("#### 📈 qu vs Friction Angle φ (sensitivity)")
+    phi_range = list(range(0, 46, 2))
+    import copy as _copy
+    qu_terz, qu_meyh = [], []
+    for p in phi_range:
+        s2 = _copy.copy(soil); s2.phi_deg = p
+        eng = BearingCapacityEngine(s2, geo, loads)
+        qu_terz.append(eng.terzaghi()["qu_ultimate"])
+        qu_meyh.append(eng.meyerhof()["qu_ultimate"])
+
+    fig_bc = go.Figure()
+    fig_bc.add_trace(go.Scatter(x=phi_range, y=qu_terz, name="Terzaghi", line=dict(color="#2563EB", width=2)))
+    fig_bc.add_trace(go.Scatter(x=phi_range, y=qu_meyh, name="Meyerhof", line=dict(color="#059669", width=2)))
+    fig_bc.add_hline(y=sls["q_max"]*3, line_dash="dash", line_color="#DC2626",
+                     annotation_text=f"3×q_max = {sls['q_max']*3:.1f}")
+    fig_bc.update_layout(xaxis_title="φ (°)", yaxis_title="qᵤ (t/m²)",
+                         height=350, margin=dict(t=20, b=40))
+    st.plotly_chart(fig_bc, use_container_width=True)
+
+
+# ════════════════════════════════════════════
+# TAB 4: SETTLEMENT
+# ════════════════════════════════════════════
+with tab_settle:
+    st.markdown("### 📉 Settlement Analysis")
+    el  = sett_results["elastic"]
+    con = sett_results["consolidation"]
+    St  = sett_results["St_cm"]
+
+    # Summary metrics
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Elastic Settlement Sᵢ",        f"{el['Si_cm']:.1f} cm")
+    m2.metric("Consolidation Settlement Sc",   f"{con['Sc_cm']:.1f} cm")
+    m3.metric("Total Settlement Sₜ",           f"{St:.1f} cm",
+              delta="⚠️ Check if > 2.5 cm" if St > 2.5 else "✅ Acceptable")
+
+    st.markdown("---")
+    col_el, col_con = st.columns(2)
+
+    with col_el:
+        st.markdown("#### Elastic Settlement")
+        st.latex(r"S_i = q_{net} \cdot B \cdot \frac{1-\nu^2}{E_s} \cdot I_f")
+        st.markdown(f"""
+        | Parameter | Value |
+        |---|---|
+        | q_net | {q_net_service:.2f} t/m² |
+        | B | {B_m:.2f} m |
+        | Es | {Es_soil:.0f} t/m² |
+        | ν | {nu_soil:.2f} |
+        | Influence factor If | {el['If']:.3f} |
+        | **Sᵢ** | **{el['Si_cm']:.2f} cm** |
+        """)
+
+    with col_con:
+        st.markdown("#### Consolidation Settlement")
+        st.latex(r"S_c = \frac{C_c \cdot H}{1+e_0} \log_{10}\frac{\sigma'_{v0}+\Delta\sigma}{\sigma'_{v0}}")
+        st.markdown(f"""
+        | Parameter | Value |
+        |---|---|
+        | Regime | {con['regime']} |
+        | σ'v0 | {con['sv0']:.2f} t/m² |
+        | σ'vc (precon.) | {con['svc']:.2f} t/m² |
+        | Δσ (Boussinesq) | {con['dsigma']:.2f} t/m² |
+        | σ'v1 (final) | {con['sv1']:.2f} t/m² |
+        | Cc | {Cc_soil:.3f} |
+        | e₀ | {e0_soil:.2f} |
+        | H_clay | {H_clay:.1f} m |
+        | **Sc** | **{con['Sc_cm']:.2f} cm** |
+        """)
+
+    # Settlement vs B chart
+    st.markdown("---")
+    st.markdown("#### 📊 Total Settlement vs Footing Width B")
+    B_range = np.linspace(1.0, 6.0, 30)
+    St_arr  = []
+    for Bv in B_range:
+        g2 = _copy.copy(geo); g2.B = Bv; g2.L = Bv
+        q2 = max(sls["P_total"] / (Bv * Bv) - soil_density * Df_m, 0)
+        se = SettlementEngine(soil, g2, q2)
+        St_arr.append(se.total()["St_cm"])
+
+    fig_st = go.Figure()
+    fig_st.add_trace(go.Scatter(x=list(B_range), y=St_arr,
+                                line=dict(color="#7C3AED", width=2), name="Total Settlement"))
+    fig_st.add_hline(y=2.5, line_dash="dash", line_color="#DC2626",
+                     annotation_text="Typical limit 2.5 cm")
+    fig_st.add_vline(x=B_m, line_dash="dot", line_color="#2563EB",
+                     annotation_text=f"Current B={B_m}m")
+    fig_st.update_layout(xaxis_title="B (m)", yaxis_title="Settlement (cm)",
+                         height=350, margin=dict(t=20, b=40))
+    st.plotly_chart(fig_st, use_container_width=True)
+
+
+# ════════════════════════════════════════════
+# TAB 5: COMBINED FOOTING
+# ════════════════════════════════════════════
+with tab_combined:
+    st.markdown("### 🔗 Combined Footing Design (2 Columns)")
+
+    cf1, cf2 = st.columns(2)
+    with cf1:
+        st.markdown("**Column 1**")
+        c1_PDL = st.number_input("P_DL col1 (ton)", value=25.0, step=1.0, key="c1pdl")
+        c1_PLL = st.number_input("P_LL col1 (ton)", value=15.0, step=1.0, key="c1pll")
+        c1_cx  = st.number_input("cx col1 (cm)", value=40.0, step=5.0, key="c1cx")
+        c1_cy  = st.number_input("cy col1 (cm)", value=40.0, step=5.0, key="c1cy")
+        c1_x   = st.number_input("Position x1 from left edge (m)", value=0.30, step=0.1, key="c1x")
+
+    with cf2:
+        st.markdown("**Column 2**")
+        c2_PDL = st.number_input("P_DL col2 (ton)", value=35.0, step=1.0, key="c2pdl")
+        c2_PLL = st.number_input("P_LL col2 (ton)", value=20.0, step=1.0, key="c2pll")
+        c2_cx  = st.number_input("cx col2 (cm)", value=40.0, step=5.0, key="c2cx")
+        c2_cy  = st.number_input("cy col2 (cm)", value=40.0, step=5.0, key="c2cy")
+        c2_x   = st.number_input("Position x2 from left edge (m)", value=3.70, step=0.1, key="c2x")
+
+    cf_B   = st.number_input("Footing Width B (m)", min_value=0.5, value=2.0, step=0.1, key="cfB")
+    cf_H   = st.number_input("Footing Thickness H (cm)", min_value=30.0, value=70.0, step=5.0, key="cfH")
+    cf_type = st.radio("Footing Type", ["Rectangular", "Trapezoidal"], horizontal=True, key="cftype")
+
+    col1d = ColumnData(c1_PDL, c1_PLL, c1_cx, c1_cy, c1_x)
+    col2d = ColumnData(c2_PDL, c2_PLL, c2_cx, c2_cy, c2_x)
+    cf_des = CombinedFootingDesigner(col1d, col2d, cf_B, cf_H, Df_m, props, soil, cf_type)
+
+    try:
+        if cf_type == "Rectangular":
+            cfr = cf_des.design_rectangular()
+        else:
+            cfr = cf_des.design_trapezoidal()
+
+        # Summary
+        st.markdown("---")
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Total Load",      f"{cfr['P_total']:.1f} t")
+        mc2.metric("Footing Length L", f"{cfr['L']:.2f} m")
+        mc3.metric("Net q (service)", f"{cfr['q_net']:.2f} t/m²")
+        ok_q = cfr["q_net"] <= qa_allow
+        mc4.metric("vs q_allow",      f"{qa_allow:.1f} t/m²",
+                   delta="✅ OK" if ok_q else "❌ Exceeds limit")
+
+        if cf_type == "Trapezoidal":
+            t1, t2 = st.columns(2)
+            t1.metric("Width at Col1 end b₁", f"{cfr['b1']:.2f} m")
+            t2.metric("Width at Col2 end b₂", f"{cfr['b2']:.2f} m")
+
+        # Shear & moment diagrams
+        st.markdown("#### Shear Force & Bending Moment Diagrams")
+        xs = cfr["xs"]; V = cfr["V_arr"]; M = cfr["M_arr"]
+
+        fig_vm = go.Figure()
+        fig_vm.add_trace(go.Scatter(x=xs, y=V, name="Shear V (ton)",
+                                    line=dict(color="#2563EB", width=2), fill="tozeroy",
+                                    fillcolor="rgba(37,99,235,0.1)"))
+        fig_vm.add_trace(go.Scatter(x=xs, y=M, name="Moment M (ton·m)",
+                                    line=dict(color="#DC2626", width=2), fill="tozeroy",
+                                    fillcolor="rgba(220,38,38,0.1)"))
+        fig_vm.add_vline(x=cfr["x1"], line_dash="dot", line_color="#059669",
+                         annotation_text="Col1")
+        fig_vm.add_vline(x=cfr["x2"], line_dash="dot", line_color="#059669",
+                         annotation_text="Col2")
+        fig_vm.update_layout(xaxis_title="x (m)", yaxis_title="V (ton) / M (ton·m)",
+                             height=380, legend=dict(x=0.01, y=0.99),
+                             margin=dict(t=20, b=40))
+        st.plotly_chart(fig_vm, use_container_width=True)
+
+        st.markdown(f"""
+        | | Value |
+        |---|---|
+        | Max Positive Moment | {cfr['M_max_pos']:.2f} ton·m |
+        | Max Negative Moment | {cfr['M_max_neg']:.2f} ton·m |
+        """)
+
+        # Plan sketch
+        st.markdown("#### Plan Sketch")
+        fig_cf, ax_cf = plt.subplots(figsize=(12, 4))
+        fig_cf.patch.set_facecolor("#FFFFFF")
+        L_cf = cfr["L"]
+
+        if cf_type == "Trapezoidal":
+            b1 = cfr["b1"]; b2 = cfr["b2"]
+            poly_x = [0,     L_cf,  L_cf,     0,     0]
+            poly_y = [-b1/2, -b2/2, b2/2,  b1/2, -b1/2]
+            ax_cf.fill(poly_x, poly_y, facecolor="#F1F5F9", edgecolor="#0F172A", lw=2)
+        else:
+            ax_cf.add_patch(plt.Rectangle((0, -cf_B/2), L_cf, cf_B,
+                                          facecolor="#F1F5F9", edgecolor="#0F172A", lw=2))
+
+        for col_x_pos, cxs, cys, label in [
+            (cfr["x1"], c1_cx/100, c1_cy/100, "C1"),
+            (cfr["x2"], c2_cx/100, c2_cy/100, "C2"),
+        ]:
+            ax_cf.add_patch(plt.Rectangle(
+                (col_x_pos - cxs/2, -cys/2), cxs, cys,
+                facecolor="#FEE2E2", hatch="//", edgecolor="#DC2626", lw=1.5))
+            ax_cf.text(col_x_pos, 0, label, ha="center", va="center",
+                       fontsize=10, fontweight="bold", color="#DC2626")
+
+        ax_cf.set_xlim(-0.3, L_cf + 0.3)
+        ax_cf.set_ylim(-max(cf_B, 2)/2 - 0.4, max(cf_B, 2)/2 + 0.4)
+        ax_cf.set_aspect("equal")
+        ax_cf.set_title(f"{cf_type} Combined Footing — Plan View", fontsize=11,
+                        fontweight="bold", color="#1E3A8A")
+        ax_cf.axis("off")
+        st.pyplot(fig_cf)
+
+    except Exception as e:
+        st.error(f"Combined footing calculation error: {e}")
+
+
 with tab_struct:
     st.markdown("### 🧱 ULS Concrete Verification")
 
