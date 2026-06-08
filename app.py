@@ -369,13 +369,43 @@ class FoundationDesigner:
 
     # ── Auto-Optimisation ─────────────────────────────────────────────────────
     def optimize_dimensions(self, aspect_ratio: float = 1.0):
-        def violation(B_try):
+        """
+        Binary search for the smallest B (and L = B * aspect_ratio) satisfying
+        all geotechnical and structural checks simultaneously.
+
+        aspect_ratio = L / B  (e.g. 1.5 → L is 50 % longer than B).
+        For circular footings B_try is the diameter D.
+
+        Returns (B_opt, L_opt) rounded up to nearest 0.05 m,
+        or raises ValueError if no feasible size exists for the current H_cm.
+
+        Bugs fixed vs v3/v4:
+          1. Circular: now sets g2.D_circ = B_try (old code never updated D_circ).
+          2. L = B * aspect_ratio, not B / aspect_ratio (ratio was inverted).
+          3. Removed dead expression that silently called violation() twice per step.
+          4. Added feasibility pre-check to detect when H_cm is too small.
+        """
+        is_circ = self.is_circular
+
+        def violation(B_try: float) -> float:
+            """
+            Signed slack: negative  = all checks pass (feasible).
+                          non-negative = at least one check fails.
+            """
             g2 = copy.copy(self.geo)
-            g2.B = round(B_try, 2)
-            g2.L = round(B_try / aspect_ratio, 2)
+            if is_circ:
+                # Fix 1: D_circ is what FoundationDesigner uses for circular sections
+                g2.D_circ = round(B_try, 3)
+                g2.B = round(B_try, 3)
+                g2.L = round(B_try, 3)
+            else:
+                g2.B = round(B_try, 3)
+                g2.L = round(B_try * aspect_ratio, 3)   # Fix 2: multiply, not divide
+
             des = FoundationDesigner(self.loads, self.props, g2)
             sls = des.analyze_service_state()
             uls = des.analyze_ultimate_state()
+
             geo_margin = min(
                 self.props.qa_allow - sls["q_max"],
                 sls["FS_ovr_x"] - FS_OVR_MIN,
@@ -388,16 +418,33 @@ class FoundationDesigner:
             )
             return -min(geo_margin, str_margin)
 
-        lo, hi = 0.5, 12.0
-        for _ in range(50):
+        # Fix 4: feasibility pre-check at a very large footing (20 m).
+        # Punching shear capacity depends on d (= f(H_cm)), not on B.
+        # If it fails at 20 m it will NEVER pass → H_cm is too small.
+        if violation(20.0) > 0:
+            raise ValueError(
+                "No feasible size found up to B = 20 m. "
+                "Punching shear likely controls — try increasing H (slab thickness)."
+            )
+
+        # Binary search: lo = infeasible, hi = feasible
+        lo, hi = 0.5, 20.0
+
+        # Walk hi down to a tight upper bound first
+        while hi > lo + 0.5 and violation(hi / 2) <= 0:
+            hi /= 2.0
+
+        # Fix 3: one call per iteration
+        for _ in range(60):
             mid = (lo + hi) / 2.0
-            (hi if violation(mid) <= 0 else lo).__class__  # dummy
             if violation(mid) <= 0:
-                hi = mid
+                hi = mid    # feasible – try smaller
             else:
-                lo = mid
-        B_opt = math.ceil(hi * 10) / 10
-        L_opt = math.ceil((B_opt / aspect_ratio) * 10) / 10
+                lo = mid    # infeasible – need larger
+
+        # Round up to nearest 0.05 m
+        B_opt = math.ceil(hi / 0.05) * 0.05
+        L_opt = B_opt if is_circ else math.ceil((B_opt * aspect_ratio) / 0.05) * 0.05
         return B_opt, L_opt
 
 
@@ -804,7 +851,9 @@ else:
 # ── OPTIMISATION ─────────────────────────────────────────────────────────────
 with st.expander("🔧 Auto-Optimisation (min. footing size)", expanded=False):
     oc1, oc2 = st.columns([2, 1])
-    aspect = 1.0 if is_circ else oc1.number_input("Aspect L/B", 0.5, 3.0, 1.0, 0.1, key="opt_aspect")
+    aspect = 1.0 if is_circ else oc1.number_input(
+        "Aspect ratio L/B  (e.g. 1.5 → L = 1.5 × B)",
+        min_value=0.5, max_value=4.0, value=1.0, step=0.1, key="opt_aspect")
     run_opt = oc2.button("🚀 Optimise", use_container_width=True, key="run_opt")
     if run_opt:
         loads_o = Loads(P_DL,P_LL,M_DL_x,M_LL_x,M_WL_x,M_DL_y,M_LL_y,M_WL_y,V_hx,V_hy)
@@ -812,12 +861,49 @@ with st.expander("🔧 Auto-Optimisation (min. footing size)", expanded=False):
         geo_o   = Geometry(B_m,L_m,H_cm,Df_m,col_cx,col_cy,
                            "circular" if is_circ else "rectangular", D_circ)
         des_o = FoundationDesigner(loads_o, props_o, geo_o)
-        with st.spinner("Searching…"):
-            B_opt, L_opt = des_o.optimize_dimensions(aspect)
-        if is_circ:
-            st.success(f"✅ Minimum D = **{B_opt:.1f} m**")
-        else:
-            st.success(f"✅ Minimum B×L = **{B_opt:.1f} m × {L_opt:.1f} m**")
+        with st.spinner("Searching for minimum size…"):
+            try:
+                B_opt, L_opt = des_o.optimize_dimensions(aspect)
+                opt_ok = True
+            except ValueError as e:
+                opt_ok = False
+                st.error(f"⚠️ Optimisation failed: {e}")
+
+        if opt_ok:
+            if is_circ:
+                st.success(f"✅ Minimum diameter: **D = {B_opt:.2f} m**  (H = {H_cm:.0f} cm fixed)")
+            else:
+                st.success(f"✅ Minimum size: **B = {B_opt:.2f} m × L = {L_opt:.2f} m**  "
+                           f"(H = {H_cm:.0f} cm fixed, L/B = {L_opt/B_opt:.2f})")
+
+            # Verification table
+            geo_v = Geometry(B_opt, L_opt, H_cm, Df_m, col_cx, col_cy,
+                             "circular" if is_circ else "rectangular",
+                             B_opt if is_circ else 0.0)
+            des_v  = FoundationDesigner(loads_o, props_o, geo_v)
+            sls_v  = des_v.analyze_service_state()
+            uls_v  = des_v.analyze_ultimate_state()
+
+            st.markdown("**Verification at optimal size:**")
+            rows = [
+                ("q_max ≤ q_allow (t/m²)",  sls_v["q_max"],        qa_allow,                False),
+                ("FS Overturning X ≥ 1.50", sls_v["FS_ovr_x"],     FS_OVR_MIN,              True),
+                ("FS Overturning Y ≥ 1.50", sls_v["FS_ovr_y"],     FS_OVR_MIN,              True),
+                ("FS Sliding ≥ 1.50",       sls_v["FS_slide"],      FS_SLIDE_MIN,            True),
+                ("1-Way Shear X (kg/cm²)",  uls_v["v_u_x"],        uls_v["phi_vc_wide"],    False),
+                ("1-Way Shear Y (kg/cm²)",  uls_v["v_u_y"],        uls_v["phi_vc_wide"],    False),
+                ("Punching Shear (kg/cm²)", uls_v["v_u_punch"],    uls_v["phi_vc_punch"],   False),
+            ]
+            import pandas as pd
+            tbl = {"Check":[], "Demand":[], "Limit":[], "Status":[]}
+            for lbl, demand, limit, is_fs in rows:
+                ok = (demand >= limit) if is_fs else (demand <= limit)
+                tbl["Check"].append(lbl)
+                tbl["Demand"].append(f"{demand:.3f}")
+                tbl["Limit"].append(f"{limit:.3f}")
+                tbl["Status"].append("✅ PASS" if ok else "❌ FAIL")
+            st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
+            st.caption("💡 Enter the optimal dimensions into the geometry inputs above to run the full analysis.")
 
 # ── BUILD OBJECTS ─────────────────────────────────────────────────────────────
 loads   = Loads(P_DL,P_LL,M_DL_x,M_LL_x,M_WL_x,M_DL_y,M_LL_y,M_WL_y,V_hx,V_hy)
